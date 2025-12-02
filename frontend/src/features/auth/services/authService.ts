@@ -21,11 +21,25 @@ export async function loginRequest(email: string, password: string, selectedRole
 }
 
 export const saveAuth = (token: string, user: any) => {
-  localStorage.setItem('token', token);
-  localStorage.setItem('user', JSON.stringify(user));
+  // Persistir en múltiples claves para compatibilidad con el frontend
+  try {
+    const t = String(token ?? '');
+    localStorage.setItem('token', t);
+    localStorage.setItem('auth_token', t);
+    localStorage.setItem('authToken', t);
+    localStorage.setItem('user', JSON.stringify(user ?? {}));
+    localStorage.setItem('auth_user', JSON.stringify(user ?? {}));
+  } catch (e) {
+    // noop
+  }
 };
 
 export const clearAuth = () => {
-  localStorage.removeItem('token');
-  localStorage.removeItem('user');
+  try {
+    localStorage.removeItem('token');
+    localStorage.removeItem('auth_token');
+    localStorage.removeItem('authToken');
+    localStorage.removeItem('user');
+    localStorage.removeItem('auth_user');
+  } catch (e) { /* noop */ }
 };

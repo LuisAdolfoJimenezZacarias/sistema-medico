@@ -1,24 +1,28 @@
 import db from '../models/index.js';
-const { Referral, Paciente, Unidad, Especialidad, Medico } = db;
+const { Referral, Medico, Paciente, Unidad, Especialidad, sequelize } = db;
 
 /**
  * Devuelve todas las referencias (con datos mínimos de paciente / médico / unidades)
  */
 export const getAllReferrals = async (req, res) => {
   try {
+    console.log('getAllReferrals called by userId:', req.userId);
     const referrals = await Referral.findAll({
+      attributes: ['id_referencia', 'folio', 'prioridad', 'estado', 'fecha_solicitud'],
       include: [
-        { model: Paciente, as: 'paciente', attributes: ['id_paciente', 'nombre', 'apellido_paterno', 'apellido_materno', 'curp'] },
-        { model: Medico, as: 'medico_remitente', attributes: ['id_medico', 'nombre', 'apellido_paterno', 'apellido_materno'] },
-        { model: Unidad, as: 'unidad_origen', attributes: ['id_unidad', 'nombre'] },
-        { model: Unidad, as: 'unidad_destino', attributes: ['id_unidad', 'nombre'] },
-        { model: Director, as: 'director_autoriza', attributes: ['id_director', 'nombre', 'apellido_paterno', 'apellido_materno'] }
+        // incluir domicilio y datos utiles para la lista/modales
+        { model: Paciente, as: 'paciente_ref', attributes: ['id_paciente','nombre','apellido_paterno','apellido_materno','domicilio','curp','telefono','fecha_nacimiento','familiar_responsable'] },
+        { model: Especialidad, as: 'especialidad_ref', attributes: ['id_especialidad','nombre'] },
+        { model: Unidad, as: 'unidad_origen_ref', attributes: ['id_unidad','nombre'] },
+        { model: Unidad, as: 'unidad_destino_ref', attributes: ['id_unidad','nombre'] },
+        { model: Medico, as: 'medico_remitente_ref', attributes: ['id_medico','nombre','apellido_paterno','apellido_materno'] },
+        ...(Director ? [{ model: Director, as: 'director_autoriza', attributes: ['id_director','nombre'] }] : [])
       ],
-      order: [['fecha_solicitud', 'DESC']]
+      order: [['fecha_solicitud', 'ASC']]
     });
     return res.status(200).json(referrals);
   } catch (err) {
-    console.error('getAllReferrals error', err);
+    console.error('getAllReferrals error:', err && err.message ? err.message : err, err && err.sql ? '\nSQL: '+err.sql : '');
     return res.status(500).json({ message: 'Server error' });
   }
 };
@@ -31,15 +35,23 @@ export const getReferralById = async (req, res) => {
     const { id } = req.params;
     const referral = await Referral.findByPk(id, {
       include: [
-        { model: Paciente, as: 'paciente', attributes: ['id_paciente', 'nombre', 'apellido_paterno', 'apellido_materno', 'curp', 'telefono'] },
+        // incluir aquí domicilio, fecha_nacimiento y familiar_responsable para que el frontend los muestre
+        { model: Paciente, as: 'paciente', attributes: ['id_paciente', 'nombre', 'apellido_paterno', 'apellido_materno', 'curp', 'telefono', 'domicilio', 'fecha_nacimiento', 'familiar_responsable', 'genero'] },
         { model: Medico, as: 'medico_remitente', attributes: ['id_medico', 'nombre', 'apellido_paterno', 'apellido_materno'] },
         { model: Unidad, as: 'unidad_origen', attributes: ['id_unidad', 'nombre'] },
         { model: Unidad, as: 'unidad_destino', attributes: ['id_unidad', 'nombre'] },
+
+        // incluir la especialidad solicitada para que el frontend muestre "Servicio que solicita"
+        { model: Especialidad, as: 'especialidad_ref', attributes: ['id_especialidad', 'nombre'] },
+
         { model: Director, as: 'director_autoriza', attributes: ['id_director', 'nombre', 'apellido_paterno', 'apellido_materno'] }
       ]
     });
     if (!referral) return res.status(404).json({ message: 'Referencia no encontrada' });
-    return res.status(200).json(referral);
+
+    // enviar objeto plano para evitar problemas de serialización
+    const plain = referral && typeof referral.get === 'function' ? referral.get({ plain: true }) : referral;
+    return res.status(200).json(plain);
   } catch (err) {
     console.error('getReferralById error', err);
     return res.status(500).json({ message: 'Server error' });
@@ -47,97 +59,89 @@ export const getReferralById = async (req, res) => {
 };
 
 export const createReferral = async (req, res) => {
+  const t = await sequelize.transaction();
   try {
-    console.log('createReferral payload (req.body):', req.body);
+    // req.userId debe venir de auth.middleware.verifyToken
+    const userId = Number(req.userId || (req.user && req.user.id));
+    if (!userId) {
+      await t.rollback();
+      return res.status(401).json({ message: 'Unauthorized: missing user' });
+    }
 
-    const {
+    // buscar medico asociado al usuario autenticado
+    const medico = await Medico.findOne({ where: { id_usuario: userId } });
+    if (!medico) {
+      await t.rollback();
+      return res.status(400).json({ message: 'El usuario autenticado no está asociado a un médico' });
+    }
+    const id_medico_remitente = medico.id_medico ?? medico.id;
+
+    // recibir payload (acepta nombres alternativos)
+    const body = req.body || {};
+    // Priorizar diagnóstico como procedimiento si el frontend lo envía así
+    if ((body.procedimiento === undefined || body.procedimiento === null || body.procedimiento === '') && body.diagnostico_envio) {
+      body.procedimiento = body.diagnostico_envio;
+    }
+    // Robust: aceptar 'servicio' como alias de 'procedimiento' (compatibilidad previa)
+    if ((body.procedimiento === undefined || body.procedimiento === null || body.procedimiento === '') && body.servicio) {
+      body.procedimiento = body.servicio;
+    }
+    console.log('createReferral: incoming body=', body);
+    const id_paciente = Number(body.id_paciente || body.idPaciente || 0) || null;
+    let id_unidad_origen = Number(body.id_unidad_origen || body.id_unidad_origen || body.id_unidad_origen) || null;
+    const id_unidad_destino = Number(body.id_unidad_destino || body.id_unidad_destino) || null;
+    const id_especialidad_solicitada = Number(body.id_especialidad_solicitada || body.id_especialidad || body.idEspecialidad) || null;
+
+    // si no viene unidad origen, usar la del medico (si existe)
+    if (!id_unidad_origen && medico.id_unidad) id_unidad_origen = medico.id_unidad;
+
+    // validaciones mínimas requeridas por el modelo
+    const missing = [];
+    if (!id_paciente) missing.push('id_paciente');
+    if (!id_unidad_origen) missing.push('id_unidad_origen');
+    if (!id_unidad_destino) missing.push('id_unidad_destino');
+    if (!id_especialidad_solicitada) missing.push('id_especialidad_solicitada');
+    if (missing.length) {
+      await t.rollback();
+      return res.status(400).json({ message: 'Faltan campos requeridos', missing });
+    }
+
+    // construir objeto a guardar (mapea sólo los campos que model permite)
+    const createObj = {
+      folio: body.folio ?? null,
+      no_expediente: body.no_expediente ?? body.no_expediente ?? null,
+      tipo_solicitud: body.tipo_solicitud ?? body.tipo_solicitud ?? null,
+      tipo_paciente: body.tipo_paciente ?? null,
+      prioridad: body.prioridad ?? 'Media',
+      fecha_solicitud: body.fecha_solicitud ? new Date(body.fecha_solicitud) : new Date(),
       id_paciente,
-      id_especialidad_solicitada,
+      id_medico_remitente,
       id_unidad_origen,
       id_unidad_destino,
-      id_medico_remitente,
-      no_folio,
-      no_expediente,
-      tipo_solicitud,
-      tipo_paciente,
-      prioridad,
-      motivo_envio,
-      procedimiento,
-      servicio,
-      resumen_clinico,
-      peso,
-      talla,
-      fc,
-      fr,
-      temp,
-      ta,
-      spo2,
-      dextrostix,
-      id_director_autoriza
-    } = req.body;
-
-    const createPayload = {
-      id_paciente: id_paciente ?? null,
-      id_especialidad_solicitada: id_especialidad_solicitada ?? null,
-      id_unidad_origen: id_unidad_origen ?? null,
-      id_unidad_destino: id_unidad_destino ?? null,
-      id_medico_remitente: id_medico_remitente ?? null,
-      folio: no_folio ?? req.body.folio ?? null,
-      no_expediente: no_expediente ?? null,
-      tipo_solicitud: tipo_solicitud ?? null,
-      tipo_paciente: tipo_paciente ?? null,
-      prioridad: prioridad ?? null,
-      motivo_envio: motivo_envio ?? null,
-      procedimiento: procedimiento ?? null,
-      servicio: servicio ?? null,
-      resumen_clinico: resumen_clinico ?? null,
-      peso: peso ?? null,
-      talla: talla ?? null,
-      fc: fc ?? null,
-      fr: fr ?? null,
-      temp: temp ?? null,
-      ta: ta ?? null,
-      spo2: spo2 ?? null,
-      dextrostix: dextrostix ?? null,
-      id_director_autoriza: id_director_autoriza ?? null
+      id_especialidad_solicitada,
+      motivo_envio: body.motivo_envio ?? null,
+      resumen_clinico: body.resumen_clinico ?? null,
+      procedimiento: (typeof body.procedimiento === 'string' && body.procedimiento.trim() === '') ? null : (body.procedimiento ?? null),
+      peso: body.peso ?? null,
+      talla: body.talla ?? null,
+      fc: body.fc ?? null,
+      fr: body.fr ?? null,
+      temp: body.temp ?? null,
+      ta: body.ta ?? null,
+      spo2: body.spo2 ?? null,
+      dextrostix: body.dextrostix ?? null,
+      id_director_autoriza: body.id_director_autoriza ?? null
     };
+    console.log('createReferral: createObj before save=', createObj);
 
-    // Si no se envió id_medico_remitente, intentar rellenarlo desde el usuario autenticado
-    if (!createPayload.id_medico_remitente && req.userId) {
-      const medico = await Medico.findOne({ where: { id_usuario: req.userId } });
-      if (medico) {
-        createPayload.id_medico_remitente = medico.id_medico;
-        console.log('createReferral: asignado id_medico_remitente desde req.userId ->', medico.id_medico);
-      } else {
-        console.warn('createReferral: no se encontró Medico para req.userId', req.userId);
-      }
-    }
+    const newRef = await Referral.create(createObj, { transaction: t });
 
-    console.log('createReferral payload (createPayload):', createPayload);
-
-    // validaciones mínimas
-    if (!createPayload.id_unidad_origen || !createPayload.id_unidad_destino) {
-      console.warn('createReferral missing unidades', {
-        id_unidad_origen: createPayload.id_unidad_origen,
-        id_unidad_destino: createPayload.id_unidad_destino
-      });
-      return res.status(400).json({ message: 'id_unidad_origen e id_unidad_destino son requeridos' });
-    }
-    // opcional: si tu modelo sigue requiriendo id_medico_remitente, validar aquí
-    if (!createPayload.id_medico_remitente) {
-      return res.status(400).json({ message: 'id_medico_remitente requerido (no se encontró médico autenticado)' });
-    }
-    
-    const newReferral = await Referral.create(createPayload);
-
-    // mostrar lo que Sequelize guardó
-    const plain = newReferral.get ? newReferral.get({ plain: true }) : newReferral;
-    console.log('createReferral saved:', plain);
-
-    return res.status(201).json(plain);
+    await t.commit();
+    return res.status(201).json({ message: 'Referencia creada', referral: newRef.get ? newRef.get({ plain: true }) : newRef });
   } catch (err) {
-    console.error('createReferral error:', err.stack || err);
-    return res.status(500).json({ message: err.message ?? 'Server error' });
+    await t.rollback();
+    console.error('createReferral error:', err && err.message ? err.message : err);
+    return res.status(500).json({ message: 'Server error', error: err?.message ?? err });
   }
 };
 
@@ -168,26 +172,39 @@ export const updateReferralStatus = async (req, res) => {
  */
 export const getReferralsByDoctor = async (req, res) => {
   try {
-    // req.userId debe ser el id_usuario (User). Buscar su registro en Medico para obtener id_medico
-    const medico = await Medico.findOne({ where: { id_usuario: req.userId } });
-    if (!medico) return res.status(200).json([]); // no es médico -> no hay referencias
+    const userId = Number(req.userId || (req.user && req.user.id));
+    if (!userId) return res.status(401).json({ message: 'Unauthorized: missing user id' });
 
-    // <-- arreglo: usar una condición válida en where (aquí solo por id_medico_remitente)
+    // buscar medico asociado al usuario autenticado
+    const medico = await Medico.findOne({ where: { id_usuario: userId } });
+    if (!medico) {
+      console.warn('getReferralsByDoctor: no medico found for userId', userId);
+      // prevenir cache para respuestas vacías también
+      res.set('Cache-Control', 'no-store');
+      return res.status(200).json([]);
+    }
+
+    const senderId = medico.id_medico;
+    console.log('getReferralsByDoctor - userId -> medico.id_medico:', userId, '->', senderId);
+
     const referrals = await Referral.findAll({
-      where: {
-        id_medico_remitente: medico.id_medico
-      },
+      where: { id_medico_remitente: senderId },
       include: [
-        { model: Paciente, as: 'paciente', attributes: ['id_paciente', 'nombre', 'apellido_paterno', 'apellido_materno'] },
-        { model: Unidad, as: 'unidad_origen', attributes: ['id_unidad', 'nombre'] },
-        { model: Unidad, as: 'unidad_destino', attributes: ['id_unidad', 'nombre'] }
+        { model: Paciente, as: 'paciente_ref', attributes: ['id_paciente','nombre','apellido_paterno','apellido_materno'] },
+        { model: Especialidad, as: 'especialidad_ref', attributes: ['id_especialidad','nombre'] },
+        { model: Unidad, as: 'unidad_origen_ref', attributes: ['id_unidad','nombre'] },
+        { model: Unidad, as: 'unidad_destino_ref', attributes: ['id_unidad','nombre'] }
       ],
       order: [['fecha_solicitud', 'DESC']]
     });
 
-    return res.status(200).json(referrals);
+    // Evitar que el cliente reciba 304 por ETag/condicionales
+    res.set('Cache-Control', 'no-store');
+
+    const plain = referrals.map(r => (r && typeof r.get === 'function') ? r.get({ plain: true }) : r);
+    return res.status(200).json(plain);
   } catch (err) {
-    console.error('getReferralsByDoctor error', err);
+    console.error('getReferralsByDoctor error:', err && err.message ? err.message : err, err && err.sql ? '\nSQL: '+err.sql : '');
     return res.status(500).json({ message: 'Server error' });
   }
 };
@@ -212,3 +229,39 @@ export const getReferralsByPatient = async (req, res) => {
     return res.status(500).json({ message: 'Server error' });
   }
 };
+
+/**
+ * Mapear referencia a formato utilizado en el frontend (ej. ReferenciasEmitidas.tsx)
+ * - Agrega campos calculados o transforma datos según sea necesario
+ */
+export const mapReferral = (r) => {
+  // 1. Construir nombre del paciente
+  // El backend ahora envía un objeto 'paciente' gracias al include
+  const p = r.paciente; 
+  const patientName = p 
+    ? `${p.nombre} ${p.apellido_paterno} ${p.apellido_materno || ''}`.trim()
+    : (r.nombre_paciente || 'Paciente Desconocido');
+
+  // 2. Obtener nombre de especialidad
+  // El backend envía un objeto 'especialidad'
+  const specialty = r.especialidad?.nombre || r.specialty || 'Sin especialidad';
+
+  return {
+    id: r.folio ?? String(r.id_referencia),
+    patientId: String(r.id_paciente),
+    patientName: patientName, 
+    specialty: specialty,
+    reason: r.motivo_envio ?? '',
+    priority: r.prioridad ?? 'Media',
+    status: r.estado ?? 'Pendiente',
+    referringDoctor: '', // Puedes omitirlo si es "Mis Referencias"
+    referringFacility: '', 
+    referredDoctor: '',
+    referredFacility: r.unidad_destino?.nombre ?? '', // Ahora también mostramos el nombre de la unidad destino
+    dateCreated: r.fecha_solicitud ? new Date(r.fecha_solicitud).toLocaleDateString() : '',
+    dateCompleted: '',
+    notes: r.resumen_clinico ?? ''
+  };
+};
+
+// REMOVIDO: asociaciones definidas en models/index.js para evitar duplicados

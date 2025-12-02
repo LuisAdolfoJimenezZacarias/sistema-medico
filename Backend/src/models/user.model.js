@@ -11,10 +11,7 @@ const User = sequelize.define('usuarios', {
     primaryKey: true,
     autoIncrement: true
   },
-  name: {// opcional: si no existe en DB, puede quedar nulo
-    type: DataTypes.STRING,
-    allowNull: true
-  },
+  // NOTE: removed 'name' attribute because the DB table `usuarios` doesn't have a `name` column.
   email: {
     type: DataTypes.STRING,
     allowNull: false,
