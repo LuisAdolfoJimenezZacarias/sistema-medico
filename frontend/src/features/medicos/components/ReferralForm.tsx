@@ -71,7 +71,7 @@ export default function ReferralForm({
                 <Field label="Tipo de solicitud">
                   <div className="flex gap-4">
                     <label className="flex items-center gap-2">
-                      <input type="radio" name="tipo_solicitud" value="programada" checked={fd.tipo_solicitud === 'programada'} onChange={(e)=>handleChange('tipo_solicitud', e.target.value)} disabled={readOnly}/>
+                      <input  type="radio" name="tipo_solicitud" value="programada" checked={fd.tipo_solicitud === 'programada'} onChange={(e)=>handleChange('tipo_solicitud', e.target.value)} disabled={readOnly}/>
                       <span>Programada</span>
                     </label>
                     <label className="flex items-center gap-2">

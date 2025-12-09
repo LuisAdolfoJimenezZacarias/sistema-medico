@@ -1,5 +1,5 @@
 import db from '../models/index.js';
-const { Referral, Medico, Paciente, Unidad, Especialidad, sequelize } = db;
+const { Referral, Medico, Paciente, Unidad, Especialidad, Director, sequelize } = db;
 
 /**
  * Devuelve todas las referencias (con datos mínimos de paciente / médico / unidades)
@@ -11,11 +11,22 @@ export const getAllReferrals = async (req, res) => {
       attributes: ['id_referencia', 'folio', 'prioridad', 'estado', 'fecha_solicitud'],
       include: [
         // incluir domicilio y datos utiles para la lista/modales
-        { model: Paciente, as: 'paciente_ref', attributes: ['id_paciente','nombre','apellido_paterno','apellido_materno','domicilio','curp','telefono','fecha_nacimiento','familiar_responsable'] },
+        {
+          model: Paciente,
+          as: 'paciente_ref', // usa el alias que tú manejes (paciente, paciente_ref, patient)
+          attributes: [
+            'id_paciente','nombre','apellido_paterno','apellido_materno',
+            'domicilio','fecha_nacimiento','edad','curp','genero','telefono','familiar_responsable'
+          ]
+        },
         { model: Especialidad, as: 'especialidad_ref', attributes: ['id_especialidad','nombre'] },
         { model: Unidad, as: 'unidad_origen_ref', attributes: ['id_unidad','nombre'] },
         { model: Unidad, as: 'unidad_destino_ref', attributes: ['id_unidad','nombre'] },
-        { model: Medico, as: 'medico_remitente_ref', attributes: ['id_medico','nombre','apellido_paterno','apellido_materno'] },
+        {
+          model: Medico,
+          as: 'medico_remitente_ref',
+          attributes: ['id_medico','nombre','apellido_paterno','apellido_materno','id_unidad']
+        },
         ...(Director ? [{ model: Director, as: 'director_autoriza', attributes: ['id_director','nombre'] }] : [])
       ],
       order: [['fecha_solicitud', 'ASC']]
@@ -47,7 +58,9 @@ export const getReferralById = async (req, res) => {
         { model: Director, as: 'director_autoriza', attributes: ['id_director', 'nombre', 'apellido_paterno', 'apellido_materno'] }
       ]
     });
-    if (!referral) return res.status(404).json({ message: 'Referencia no encontrada' });
+    if (!referral) {
+      return res.status(404).json({ message: 'Referencia no encontrada' });
+    }
 
     // enviar objeto plano para evitar problemas de serialización
     const plain = referral && typeof referral.get === 'function' ? referral.get({ plain: true }) : referral;
@@ -190,11 +203,19 @@ export const getReferralsByDoctor = async (req, res) => {
     const referrals = await Referral.findAll({
       where: { id_medico_remitente: senderId },
       include: [
-        { model: Paciente, as: 'paciente_ref', attributes: ['id_paciente','nombre','apellido_paterno','apellido_materno'] },
-        { model: Especialidad, as: 'especialidad_ref', attributes: ['id_especialidad','nombre'] },
-        { model: Unidad, as: 'unidad_origen_ref', attributes: ['id_unidad','nombre'] },
-        { model: Unidad, as: 'unidad_destino_ref', attributes: ['id_unidad','nombre'] }
-      ],
+        // incluir domicilio y demás campos del paciente para que el frontend los tenga al editar
+        { 
+          model: Paciente, 
+          as: 'paciente_ref', 
+          attributes: [
+            'id_paciente', 'nombre', 'apellido_paterno', 'apellido_materno',
+            'domicilio', 'fecha_nacimiento', 'edad', 'curp', 'genero', 'telefono', 'familiar_responsable'
+          ] 
+        },
+         { model: Especialidad, as: 'especialidad_ref', attributes: ['id_especialidad','nombre'] },
+         { model: Unidad, as: 'unidad_origen_ref', attributes: ['id_unidad','nombre'] },
+         { model: Unidad, as: 'unidad_destino_ref', attributes: ['id_unidad','nombre'] }
+       ],
       order: [['fecha_solicitud', 'DESC']]
     });
 
@@ -265,3 +286,59 @@ export const mapReferral = (r) => {
 };
 
 // REMOVIDO: asociaciones definidas en models/index.js para evitar duplicados
+
+export const updateReferral = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const body = req.body || {};
+
+    const referral = await Referral.findByPk(id);
+    if (!referral) return res.status(404).json({ message: 'Referencia no encontrada' });
+
+    // aceptar alias comunes y actualizar solo los campos permitidos
+    const get = (a, b) => (typeof a !== 'undefined' ? a : (typeof b !== 'undefined' ? b : undefined));
+
+    referral.folio = get(body.folio, body.no_folio) ?? referral.folio;
+    referral.no_expediente = get(body.no_expediente, body.expediente) ?? referral.no_expediente;
+    referral.tipo_solicitud = get(body.tipo_solicitud, body.tipoSolicitud) ?? referral.tipo_solicitud;
+    referral.tipo_paciente = get(body.tipo_paciente, body.tipoPaciente) ?? referral.tipo_paciente;
+    referral.prioridad = get(body.prioridad, body.prioridad) ?? referral.prioridad;
+
+    if (typeof get(body.fecha_solicitud, body.fechaSolicitud) !== 'undefined') {
+      referral.fecha_solicitud = body.fecha_solicitud ? new Date(body.fecha_solicitud) : referral.fecha_solicitud;
+    }
+
+    referral.id_paciente = Number(get(body.id_paciente, body.idPaciente) ?? referral.id_paciente);
+    referral.id_medico_remitente = Number(get(body.id_medico_remitente, body.idMedicoRemitente) ?? referral.id_medico_remitente);
+    referral.id_unidad_origen = Number(get(body.id_unidad_origen, body.idUnidadOrigen) ?? referral.id_unidad_origen);
+    referral.id_unidad_destino = Number(get(body.id_unidad_destino, body.idUnidadDestino) ?? referral.id_unidad_destino);
+    referral.id_especialidad_solicitada = Number(get(body.id_especialidad_solicitada, body.idEspecialidad) ?? referral.id_especialidad_solicitada);
+
+    referral.motivo_envio = get(body.motivo_envio, body.motivo) ?? referral.motivo_envio;
+    // procedimiento puede llegar bajo varios nombres
+    referral.procedimiento = get(body.procedimiento, get(body.diagnostico_envio, body.servicio)) ?? referral.procedimiento;
+    referral.resumen_clinico = get(body.resumen_clinico, body.resumen) ?? referral.resumen_clinico;
+
+    // signos vitales
+    referral.peso = typeof body.peso !== 'undefined' ? body.peso : referral.peso;
+    referral.talla = typeof body.talla !== 'undefined' ? body.talla : referral.talla;
+    referral.fc = typeof body.fc !== 'undefined' ? body.fc : referral.fc;
+    referral.fr = typeof body.fr !== 'undefined' ? body.fr : referral.fr;
+    referral.temp = typeof body.temp !== 'undefined' ? body.temp : referral.temp;
+    referral.ta = typeof body.ta !== 'undefined' ? body.ta : referral.ta;
+    referral.spo2 = typeof body.spo2 !== 'undefined' ? body.spo2 : referral.spo2;
+    referral.dextrostix = typeof body.dextrostix !== 'undefined' ? body.dextrostix : referral.dextrostix;
+
+    // director autorizante
+    if (typeof body.id_director_autoriza !== 'undefined') {
+      referral.id_director_autoriza = body.id_director_autoriza ?? null;
+    }
+
+    await referral.save();
+    const plain = referral && typeof referral.get === 'function' ? referral.get({ plain: true }) : referral;
+    return res.status(200).json({ message: 'Referencia actualizada', referral: plain });
+  } catch (err) {
+    console.error('updateReferral error:', err && err.message ? err.message : err);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};

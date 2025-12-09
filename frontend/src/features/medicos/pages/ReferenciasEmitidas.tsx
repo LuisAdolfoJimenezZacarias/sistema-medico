@@ -27,9 +27,10 @@ export interface Referral {
 }
 
 // simple mapper (ajusta según shape real del backend)
-const mapReferral = (r: any): Referral & { rawId?: number | string } => ({
+const mapReferral = (r: any): Referral & { rawId?: number | string; _raw?: any } => ({
   // rawId es el id numérico real de la referencia en la BD
   rawId: r.id_referencia ?? r.id ?? null,
+  _raw: r, // <-- conservar objeto original para edición/navegación
   id: r.folio ?? String(r.id_referencia ?? r.id ?? (r.referralId ?? '')),
   patientId: String(r.id_paciente ?? r.paciente?.id_paciente ?? r.patientId ?? r.patient_id ?? ''),
   patientName: r.paciente_ref
@@ -343,13 +344,22 @@ export const ReferenciasEmitidas: React.FC = () => {
                     <TableCell>
                       <div className="flex gap-2">
                         <Button isIconOnly size="sm" variant="light" onPress={() => { 
-  const realId = (referral as any).rawId ?? referral.id; 
-  setDetailId(String(realId)); 
-  setDetailOpen(true); 
-}}>
+                              const realId = (referral as any).rawId ?? referral.id; 
+                              setDetailId(String(realId)); 
+                              setDetailOpen(true); 
+                             }}>
                           <Icon icon="lucide:eye" className="text-default-500" />
                         </Button>
-                        <Button isIconOnly size="sm" variant="light">
+                        <Button
+                          isIconOnly
+                          size="sm"
+                          variant="light"
+                          onPress={() => {
+                            // navegar al formulario de nueva referencia en modo edición,
+                            // pasando la referencia original en location.state
+                            navigate('/doctor/referrals/NuevaReferencia', { state: { edit: true, referral: (referral as any)._raw ?? referral } });
+                          }}
+                        >
                           <Icon icon="lucide:edit" className="text-default-500" />
                         </Button>
                         <Button isIconOnly size="sm" variant="light">
