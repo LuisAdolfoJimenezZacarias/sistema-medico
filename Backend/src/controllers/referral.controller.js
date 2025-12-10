@@ -1,4 +1,5 @@
 import db from '../models/index.js';
+import { Op } from 'sequelize'; // <-- agregado
 const { Referral, Medico, Paciente, Unidad, Especialidad, Director, sequelize } = db;
 
 /**
@@ -6,35 +7,48 @@ const { Referral, Medico, Paciente, Unidad, Especialidad, Director, sequelize } 
  */
 export const getAllReferrals = async (req, res) => {
   try {
-    console.log('getAllReferrals called by userId:', req.userId);
-    const referrals = await Referral.findAll({
-      attributes: ['id_referencia', 'folio', 'prioridad', 'estado', 'fecha_solicitud'],
-      include: [
-        // incluir domicilio y datos utiles para la lista/modales
-        {
-          model: Paciente,
-          as: 'paciente_ref', // usa el alias que tú manejes (paciente, paciente_ref, patient)
-          attributes: [
-            'id_paciente','nombre','apellido_paterno','apellido_materno',
-            'domicilio','fecha_nacimiento','edad','curp','genero','telefono','familiar_responsable'
+    const { id_unidad_origen, unidad_origen, estado } = req.query; // <-- agregado estado
+
+    const where = {};
+    if (id_unidad_origen) {
+      where.id_unidad_origen = id_unidad_origen;
+    } else if (unidad_origen) {
+      const unidad = await Unidad.findOne({
+        where: {
+          [Op.or]: [
+            { nombre: unidad_origen },
+            { clues: unidad_origen }
           ]
-        },
-        { model: Especialidad, as: 'especialidad_ref', attributes: ['id_especialidad','nombre'] },
-        { model: Unidad, as: 'unidad_origen_ref', attributes: ['id_unidad','nombre'] },
-        { model: Unidad, as: 'unidad_destino_ref', attributes: ['id_unidad','nombre'] },
-        {
-          model: Medico,
-          as: 'medico_remitente_ref',
-          attributes: ['id_medico','nombre','apellido_paterno','apellido_materno','id_unidad']
-        },
-        ...(Director ? [{ model: Director, as: 'director_autoriza', attributes: ['id_director','nombre'] }] : [])
+        }
+      });
+
+      if (!unidad) return res.json([]);
+      where.id_unidad_origen = unidad.id_unidad;
+    }
+
+    // aplicar filtro por estado si se pasa
+    if (typeof estado !== 'undefined' && String(estado).trim() !== '') {
+      where.estado = String(estado).trim();
+    }
+
+    const referrals = await Referral.findAll({
+      where,
+      include: [
+        { model: Paciente, as: 'paciente', attributes: ['id_paciente', 'nombre', 'apellido_paterno', 'apellido_materno', 'domicilio', 'telefono', 'fecha_nacimiento', 'familiar_responsable', 'genero', 'curp', 'edad'] },
+        { model: Medico, as: 'medico_remitente', attributes: ['id_medico', 'nombre', 'apellido_paterno', 'apellido_materno'] },
+        { model: Especialidad, as: 'especialidad_ref', attributes: ['id_especialidad', 'nombre'], required: false },
+        { model: Unidad, as: 'unidad_origen', attributes: ['id_unidad', 'nombre', 'clues'], required: false },
+        { model: Unidad, as: 'unidad_destino', attributes: ['id_unidad', 'nombre', 'clues'], required: false }
       ],
-      order: [['fecha_solicitud', 'ASC']]
+      order: [['fecha_solicitud', 'DESC']]
     });
-    return res.status(200).json(referrals);
+
+    const plain = referrals.map(r => (r && typeof r.get === 'function') ? r.get({ plain: true }) : r);
+    res.set('Cache-Control', 'no-store');
+    return res.status(200).json(plain);
   } catch (err) {
-    console.error('getAllReferrals error:', err && err.message ? err.message : err, err && err.sql ? '\nSQL: '+err.sql : '');
-    return res.status(500).json({ message: 'Server error' });
+    console.error('getAllReferrals error:', err);
+    return res.status(500).json({ message: err.message || 'Error al obtener referencias' });
   }
 };
 
@@ -70,6 +84,14 @@ export const getReferralById = async (req, res) => {
     return res.status(500).json({ message: 'Server error' });
   }
 };
+
+// Si necesitas una versión JS local, añade esta en su lugar:
+function resolveAdminUnit(user) {
+  const raw = (user && (user.id_unidad ?? user.unidadId ?? user.unidad ?? user.facility ?? user.facilityName ?? user.unidad_origen)) ?? null;
+  const unidadId = raw != null && !Number.isNaN(Number(raw)) ? String(Number(raw)) : null;
+  const unidadName = !unidadId && raw ? String(raw) : null;
+  return { unidadId, unidadName };
+}
 
 export const createReferral = async (req, res) => {
   const t = await sequelize.transaction();
@@ -340,5 +362,83 @@ export const updateReferral = async (req, res) => {
   } catch (err) {
     console.error('updateReferral error:', err && err.message ? err.message : err);
     return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+/**
+ * Enviar referencia a director para autorización
+ */
+export const sendReferralToDirector = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const authUser = req.user ?? null; // si usas verifyToken
+
+    const referral = await Referral.findByPk(id);
+    if (!referral) return res.status(404).json({ message: 'Referencia no encontrada' });
+
+    const unidadId = referral.id_unidad_origen;
+    if (!unidadId) return res.status(400).json({ message: 'Referencia sin unidad de origen' });
+
+    // buscar director de la unidad
+    const director = await Director.findOne({ where: { id_unidad: unidadId } });
+    if (!director) return res.status(404).json({ message: 'No se encontró director para la unidad' });
+
+    // persistir estado y asignar director responsable
+    referral.id_director_autoriza = director.id_director ?? referral.id_director_autoriza;
+    referral.estado = 'Enviada';
+    // opcional metadata
+    // referral.fecha_procesada = new Date();
+    // referral.procesado_por = authUser?.id ?? null;
+
+    await referral.save();
+
+    const plain = (referral && typeof referral.get === 'function') ? referral.get({ plain: true }) : referral;
+    return res.status(200).json({ message: 'Referencia enviada al director', referral: plain });
+  } catch (err) {
+    console.error('sendReferralToDirector error:', err);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+/**
+ * Obtener referencias para el director autenticado
+ */
+export const getReferralsForDirector = async (req, res) => {
+  try {
+    const authUser = req.user ?? null;
+    if (!authUser) return res.status(401).json({ message: 'Unauthorized' });
+
+    // buscamos referencias con estado "Enviada" asignadas al director o a la unidad del usuario
+    const where = { estado: 'Enviada' };
+
+    // priorizar id_director_autoriza si viene en token, sino id_unidad del usuario
+    if (authUser.id_director) {
+      where.id_director_autoriza = authUser.id_director;
+    } else if (authUser.id_unidad) {
+      where.id_unidad_origen = authUser.id_unidad;
+    } else {
+      // fallback: intentar buscar Director por usuario
+      const director = await Director.findOne({ where: { id_usuario: authUser.id } });
+      if (director) where.id_director_autoriza = director.id_director;
+      else return res.status(400).json({ message: 'No se pudo determinar unidad/director' });
+    }
+
+    const referrals = await Referral.findAll({
+      where,
+      include: [
+        { model: Paciente, as: 'paciente', attributes: ['id_paciente', 'nombre', 'apellido_paterno', 'apellido_materno'] },
+        { model: Medico, as: 'medico_remitente', attributes: ['id_medico', 'nombre', 'apellido_paterno', 'apellido_materno'] },
+        { model: Especialidad, as: 'especialidad_ref', attributes: ['id_especialidad', 'nombre'], required: false },
+        { model: Unidad, as: 'unidad_origen', attributes: ['id_unidad', 'nombre', 'clues'], required: false },
+        { model: Unidad, as: 'unidad_destino', attributes: ['id_unidad', 'nombre', 'clues'], required: false }
+      ],
+      order: [['fecha_solicitud', 'DESC']]
+    });
+
+    const plain = referrals.map(r => (r && typeof r.get === 'function') ? r.get({ plain: true }) : r);
+    return res.status(200).json(plain);
+  } catch (err) {
+    console.error('getReferralsForDirector error:', err);
+    return res.status(500).json({ message: err.message || 'Error al obtener referencias para director' });
   }
 };

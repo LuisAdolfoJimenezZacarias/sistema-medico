@@ -262,43 +262,55 @@ export default function NuevaReferencia(): JSX.Element {
 
     (async () => {
       try {
-        // 1) si currentUser ya trae nombre de unidad, usarlo
+        console.debug('[NuevaReferencia] autofill start currentUser:', currentUser);
+
+        // 1) usar valor directo si currentUser ya trae nombre de unidad
         const candidate = currentUser?.unidad_nombre ?? currentUser?.unidad ?? currentUser?.institution ?? currentUser?.organizacion;
         if (candidate) {
           handleInputChange('institucion', candidate);
         }
 
         // 2) intentar obtener medico (por id_medico o por usuario)
-        let medico = null;
+        let medico: any = null;
+        const safeJson = async (res: Response) => {
+          try {
+            const j = await res.json();
+            // admitir respuesta envuelta { medico: ... } o la propia entidad
+            return j?.medico ?? j;
+          } catch (e) { return null; }
+        };
+
         if (medicoId) {
           try {
             const res = await fetch(`${API_BASE}/medicos/${medicoId}`, { headers: { Accept: 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) } });
-            if (res.ok) medico = await res.json();
-          } catch (e) { /* noop */ }
+            if (res.ok) medico = await safeJson(res);
+            else console.debug('[NuevaReferencia] medicos/:id ->', res.status);
+          } catch (e) { console.debug('fetch medicos by id error', e); }
         }
+
         if (!medico && userId) {
           try {
             const res = await fetch(`${API_BASE}/medicos/por_usuario/${userId}`, { headers: { Accept: 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) } });
-            if (res.ok) medico = await res.json();
-          } catch (e) { /* noop */ }
+            if (res.ok) medico = await safeJson(res);
+            else console.debug('[NuevaReferencia] medicos/por_usuario ->', res.status);
+          } catch (e) { console.debug('fetch medicos por_usuario error', e); }
         }
 
-        // 3) si conseguimos medico, obtener unidad por id_unidad y autocompletar nombre del medico
+        // 3) si conseguimos medico, autocompletar campos (nombre medico, id y unidad)
         if (medico) {
+          console.debug('[NuevaReferencia] medico encontrado para autofill:', medico);
           const fullName = [medico.nombre, medico.apellido_paterno, medico.apellido_materno].filter(Boolean).join(' ').trim();
           if (fullName) handleInputChange('medico_solicitante', fullName);
           const idMed = medico.id_medico ?? medico.id ?? null;
           if (idMed) handleInputChange('id_medico_remitente', idMed);
 
-          // fijar unidad asignada (usada para excluir en destinos)
-          const unidadId = medico.id_unidad ?? medico.idUnidad ?? null;
+          // intentar resolver unidad desde el medico
+          const unidadId = medico.id_unidad ?? medico.idUnidad ?? medico.unidad_id ?? medical?.unidad?.id ?? null;
           if (unidadId) {
             setAssignedUnidadId(Number(unidadId));
-            // también intentar resolver y fijar institucion/unidad origen si coincide con listas ya cargadas
             const found = (unidades || []).find((u: any) => Number(u.id_unidad ?? u.id ?? -1) === Number(unidadId));
             if (found) {
               handleInputChange('institucion', found.nombre ?? found.name ?? '');
-              // Si el usuario no escribió y la institucion coincide con su unidad, fijar id_unidad_origen
               if (!form.id_unidad_origen) {
                 handleInputChange('unidad_origen_nombre', found.nombre ?? found.name ?? '');
                 handleInputChange('id_unidad_origen', found.id_unidad ?? found.id ?? null);
@@ -312,18 +324,35 @@ export default function NuevaReferencia(): JSX.Element {
             try {
               const r = await fetch(`${API_BASE}/directors/por_unidad/${unidadForDirector}`, { headers: { Accept: 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) } });
               if (r.ok) {
-                const d = await r.json();
-                const nombreDir = [d.nombre, d.apellido_paterno, d.apellido_materno].filter(Boolean).join(' ').trim();
+                const d = await r.json().catch(() => null);
+                const nombreDir = [d?.nombre, d?.apellido_paterno, d?.apellido_materno].filter(Boolean).join(' ').trim();
                 if (nombreDir) {
                   handleInputChange('directivo_autoriza', nombreDir);
-                  handleInputChange('id_director_autoriza', d.id_director ?? d.id ?? null);
+                  handleInputChange('id_director_autoriza', d?.id_director ?? d?.id ?? null);
                 }
-              }
-            } catch (err) {
-              console.debug('Autofill director error', err);
+              } else console.debug('[NuevaReferencia] directors/por_unidad ->', r.status);
+            } catch (err) { console.debug('Autofill director error', err); }
+          }
+          return;
+        }
+
+        // 4) fallback: si no hay medico, pero currentUser trae id_unidad, resolver nombre desde unidades cargadas
+        const fallbackUnidadId = currentUser?.id_unidad ?? currentUser?.unidad_id ?? null;
+        if (fallbackUnidadId) {
+          const found = (unidades || []).find((u: any) => Number(u.id_unidad ?? u.id ?? -1) === Number(fallbackUnidadId));
+          if (found) {
+            handleInputChange('institucion', found.nombre ?? found.name ?? '');
+            if (!form.id_unidad_origen) {
+              handleInputChange('unidad_origen_nombre', found.nombre ?? found.name ?? '');
+              handleInputChange('id_unidad_origen', found.id_unidad ?? found.id ?? null);
             }
+            console.debug('[NuevaReferencia] autofill from currentUser.id_unidad ->', found);
+            return;
           }
         }
+
+        console.debug('[NuevaReferencia] no se pudo autofill institucion (no medico/usuario unidad)');
+
       } catch (e) {
         console.error('Autorellenar institucion/medico error', e);
       }
@@ -770,7 +799,21 @@ React.useEffect(() => {
 
   React.useEffect(() => {
     try {
-      const st = (location && (location.state as any)) || null;
+      // Preferir location.state, fallback a sessionStorage (para casos donde hubo redirect al login)
+      const stRaw = (location && (location.state as any)) || null;
+      let st = stRaw;
+      if ((!st || !st.edit) && typeof window !== 'undefined') {
+        try {
+          const s = sessionStorage.getItem('editReferral');
+          if (s) {
+            st = { edit: true, referral: JSON.parse(s) };
+            // limpiar para no reutilizar accidentalmente
+            sessionStorage.removeItem('editReferral');
+          }
+        } catch (e) {
+          console.warn('[NuevaReferencia] sessionStorage parse error', e);
+        }
+      }
       if (!st || !st.edit) return;
       const r = st.referral ?? st;
 
@@ -810,17 +853,16 @@ React.useEffect(() => {
         no_folio: pick(['folio', 'no_folio', 'noFolio'], ''),
         fecha_solicitud: pick(['fecha_solicitud', 'fechaSolicitud', 'created_at', 'fecha'], '')?.toString() ?? '',
 
-        // solicitud: mapear tipo_solicitud y tipo_paciente (aliases soportados)
+        // solicitud
         tipo_solicitud: pick(['tipo_solicitud', 'tipoSolicitud', 'tipo', 'request_type'], ''),
         tipo_paciente: pick(['tipo_paciente', 'tipoPaciente', 'paciente_tipo', 'patient_type'], ''),
 
-        // paciente (soporta varias estructuras: directo en objeto o dentro de paciente/paciente_ref)
+        // paciente
         id_paciente: pickNested([['id_paciente'], ['paciente','id_paciente'], ['paciente','id'], ['patient','id']], null),
         nombre_paciente: pickNested([['nombre_paciente'], ['paciente','nombre'], ['patient','name'], ['paciente_ref','nombre']], ''),
         app_paterno: pickNested([['app_paterno'], ['paciente','apellido_paterno'], ['paciente_ref','apellido_paterno']], ''),
         app_materno: pickNested([['app_materno'], ['paciente','apellido_materno'], ['paciente_ref','apellido_materno']], ''),
 
-        // campos que faltaban: domicilio, fecha_nacimiento, edad, curp, sexo, familiar_responsable, telefono
         domicilio: pickNested([['paciente','domicilio'], ['paciente_ref','domicilio'], ['domicilio'], ['patient','address'], ['paciente_ref','domicilio']], ''),
         fecha_nacimiento: pickNested([['paciente','fecha_nacimiento'], ['paciente_ref','fecha_nacimiento'], ['paciente','fechaNacimiento'], ['paciente_ref','fechaNacimiento'], ['fecha_nacimiento'], ['fechaNacimiento'], ['patient','birth_date']], '') ?? '',
         edad: pickNested([['paciente','edad'], ['paciente_ref','edad'], ['edad'], ['patient','age']], '') ?? '',
@@ -843,11 +885,10 @@ React.useEffect(() => {
 
         // motivos / resumen
         motivo_envio: pick(['motivo_envio','motivo','reason'], ''),
-        // mapear campo diagnóstico/procedimiento (variantes comunes)
         diagnostico_envio: pick(['diagnostico_envio','procedimiento','procedure','procedimiento_envio','procedimientoEnvio'], '') ?? '',
         resumen_clinico: pick(['resumen_clinico','resumen','diagnostico_envio'], ''),
 
-        // signos vitales (si existen)
+        // signos vitales
         peso: pick('peso',''),
         talla: pick('talla',''),
         fc: pick('fc',''),
@@ -874,7 +915,8 @@ React.useEffect(() => {
           return [d.nombre, d.apellido_paterno, d.apellido_materno].filter(Boolean).join(' ').trim();
         })(),
 
-        prioridad: pick(['prioridad','priority'], 'Media')
+        prioridad: pick(['prioridad','priority'], 'Media'),
+        _raw: r
       };
 
       console.log('[NuevaReferencia] cargando referencia para edición, mapped:', mapped);

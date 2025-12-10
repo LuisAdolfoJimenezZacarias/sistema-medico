@@ -1,390 +1,328 @@
 import React from 'react';
-import { Table, TableHeader, TableColumn, TableBody, TableRow, TableCell, Button, Input, Dropdown, DropdownTrigger, DropdownMenu, DropdownItem, Pagination, Chip, Card, CardBody, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, useDisclosure } from '@heroui/react';
+import { useNavigate } from 'react-router-dom';
+import { Table, TableHeader, TableColumn, TableBody, TableRow, TableCell, Input, Pagination, Card, CardBody, Tabs, Tab, Chip, Button, addToast } from '@heroui/react';
 import { Icon } from '@iconify/react';
 import { motion } from 'framer-motion';
-import { addToast } from '@heroui/react';
+import { useAuth } from '../../../context/auth-context';
+import { resolveAdminUnit } from '../../../utils/resolveAdminUnit';
+import ReferralDetailModal from '../../medicos/components/ReferralDetailModal'; // <-- agregado
 
-interface Document {
+const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:5000/api';
+
+export interface Referral {
   id: string;
-  name: string;
-  type: 'Medical Record' | 'Lab Result' | 'Prescription' | 'Referral' | 'Consent Form' | 'Other';
-  patientName: string;
-  patientId: string;
-  uploadedBy: string;
-  uploadDate: string;
-  size: string;
-  status: 'Active' | 'Archived' | 'Pending Review';
+  rawId?: number | string;
+  paciente?: string;
+  apellido_paterno?: string;
+  apellido_materno?: string;
+  specialty?: string;
+  prioridad?: string;
+  status?: string;
+  fecha?: string;
+  no_folio?: string;
+  domicilio?: string; // <-- nuevo campo
+  destino?: string; // <-- nuevo campo
+  _raw?: any;
 }
 
+// Mapper copiado / adaptado de ReferenciasEmitidas
+const mapReferral = (r: any): Referral => ({
+  rawId: r.id_referencia ?? r.id ?? null,
+  _raw: r,
+  id: r.folio ?? String(r.id_referencia ?? r.id ?? (r.referralId ?? '')),
+  no_folio: r.no_folio ?? r.folio ?? r.no_solicitud ?? '',
+  // preferir 'paciente' (alias usado en models) y fallback a 'paciente_ref'
+  paciente: (r.paciente ?? r.paciente_ref)
+    ? [
+        (r.paciente ?? r.paciente_ref).nombre,
+        (r.paciente ?? r.paciente_ref).apellido_paterno,
+        (r.paciente ?? r.paciente_ref).apellido_materno
+      ].filter(Boolean).join(' ')
+    : (r.nombre_paciente ?? r.patientName ?? r.nombre ?? ''),
+  apellido_paterno: (r.paciente ?? r.paciente_ref)?.apellido_paterno ?? r.apellido_paterno ?? r.app_paterno ?? '',
+  apellido_materno: (r.paciente ?? r.paciente_ref)?.apellido_materno ?? r.apellido_materno ?? r.app_materno ?? '',
+  specialty: r.especialidad_ref?.nombre ?? r.especialidad?.nombre ?? r.servicio ?? r.specialty ?? '',
+  prioridad: r.prioridad ?? r.prioridad_solicitud ?? r.prioridad ?? '',
+  status: r.estado ?? r.status ?? r.estado_solicitud ?? '',
+  fecha: r.fecha_solicitud ?? r.createdAt ?? r.created_at ?? r.fecha ?? '',
+  domicilio: r.domicilio ?? r.paciente?.domicilio ?? r.patient?.address ?? r.direccion ?? '', // <-- mapeo de domicilio
+  destino: r.unidad_destino_nombre ?? r.destino ?? '', // <-- mapeo de destino
+  curp: (r.paciente ?? r.paciente_ref)?.curp ??  r.curp ?? r.patient?.curp ?? '', // <-- mapeo de curp
+});
+
 export const GestionDocumentos: React.FC = () => {
-  const { isOpen, onOpen, onOpenChange } = useDisclosure();
-  const [documents, setDocuments] = React.useState<Document[]>([]);
+  const { user } = useAuth() as any;
+  const navigate = useNavigate();
+
+  const [items, setItems] = React.useState<Referral[]>([]);
   const [searchTerm, setSearchTerm] = React.useState('');
   const [page, setPage] = React.useState(1);
   const [isLoading, setIsLoading] = React.useState(true);
-  const [selectedDocType, setSelectedDocType] = React.useState<string>('all');
-  
-  // Mock document data
+  const [loadError, setLoadError] = React.useState<string | null>(null);
+  const [selectedTab, setSelectedTab] = React.useState('all');
+
+  // Actions state (detalle / edición / responder)
+  const [detailId, setDetailId] = React.useState<string | null>(null);
+  const [detailOpen, setDetailOpen] = React.useState(false);
+
   React.useEffect(() => {
-    // Simulate API call
-    setTimeout(() => {
-      const mockDocuments: Document[] = [
-        { id: 'DOC-2023-001', name: 'Medical History Report.pdf', type: 'Medical Record', patientName: 'Maria Garcia', patientId: 'P001', uploadedBy: 'Dr. Jane Smith', uploadDate: '2023-09-15', size: '2.4 MB', status: 'Active' },
-        { id: 'DOC-2023-002', name: 'Blood Test Results.pdf', type: 'Lab Result', patientName: 'John Smith', patientId: 'P002', uploadedBy: 'Dr. Michael Chen', uploadDate: '2023-09-14', size: '1.8 MB', status: 'Active' },
-        { id: 'DOC-2023-003', name: 'Dermatology Prescription.pdf', type: 'Prescription', patientName: 'Robert Johnson', patientId: 'P003', uploadedBy: 'Dr. Sarah Lee', uploadDate: '2023-09-12', size: '0.5 MB', status: 'Active' },
-        { id: 'DOC-2023-004', name: 'Ophthalmology Referral.pdf', type: 'Referral', patientName: 'Sarah Williams', patientId: 'P004', uploadedBy: 'Dr. James Wilson', uploadDate: '2023-09-10', size: '1.2 MB', status: 'Pending Review' },
-        { id: 'DOC-2023-005', name: 'Surgery Consent Form.pdf', type: 'Consent Form', patientName: 'Michael Brown', patientId: 'P005', uploadedBy: 'Dr. Emily Rodriguez', uploadDate: '2023-09-08', size: '0.8 MB', status: 'Active' },
-        { id: 'DOC-2023-006', name: 'Diabetes Treatment Plan.pdf', type: 'Medical Record', patientName: 'Jennifer Davis', patientId: 'P006', uploadedBy: 'Dr. Robert Kim', uploadDate: '2023-09-05', size: '1.5 MB', status: 'Active' },
-        { id: 'DOC-2023-007', name: 'Chest X-Ray Results.pdf', type: 'Lab Result', patientName: 'David Miller', patientId: 'P007', uploadedBy: 'Dr. Lisa Chen', uploadDate: '2023-09-03', size: '3.2 MB', status: 'Archived' },
-        { id: 'DOC-2023-008', name: 'Gastroenterology Report.pdf', type: 'Medical Record', patientName: 'Lisa Wilson', patientId: 'P008', uploadedBy: 'Dr. Thomas Johnson', uploadDate: '2023-09-01', size: '2.1 MB', status: 'Active' },
-      ];
-      
-      setDocuments(mockDocuments);
-      setIsLoading(false);
-    }, 1000);
-  }, []);
-  
-  // Filter documents based on search term and document type
-  const filteredDocuments = documents.filter(document => {
-    const matchesSearch = 
-      document.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      document.patientName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      document.id.toLowerCase().includes(searchTerm.toLowerCase());
-    
-    if (selectedDocType === 'all') return matchesSearch;
-    return matchesSearch && document.type === selectedDocType;
-  });
-  
-  // Pagination
-  const rowsPerPage = 5;
-  const pages = Math.ceil(filteredDocuments.length / rowsPerPage);
-  const paginatedDocuments = filteredDocuments.slice((page - 1) * rowsPerPage, page * rowsPerPage);
-  
-  const handleArchiveDocument = (documentId: string) => {
-    setDocuments(documents.map(doc => 
-      doc.id === documentId 
-        ? { ...doc, status: 'Archived' as const } 
-        : doc
-    ));
-    
-    addToast({
-      title: "Document Archived",
-      description: `Document ${documentId} has been archived successfully`,
-      color: "success"
+    let mounted = true;
+    const controller = new AbortController();
+
+    const fetchReferralsForUnit = async () => {
+      setIsLoading(true);
+      setLoadError(null);
+
+      const { unidadId, unidadName } = resolveAdminUnit(user);
+      if (!unidadId && !unidadName) {
+        setItems([]);
+        setIsLoading(false);
+        setLoadError('No se pudo determinar la unidad del administrador.');
+        return;
+      }
+
+      const token = localStorage.getItem('token');
+      const params = new URLSearchParams();
+      if (unidadId) params.set('id_unidad_origen', unidadId);
+      else params.set('unidad_origen', unidadName!);
+
+      // FILTRO: solo las referencias enviadas al director (ajusta la key según tu backend)
+      // Opción A: si backend filtra por estado
+      params.set('estado', 'Enviada');
+      // Opción B (si tu API soporta flag): params.set('sent_to_director', '1');
+
+      try {
+        const res = await fetch(`${API_BASE}/referrals?${params.toString()}`, {
+          method: 'GET',
+          headers: { Accept: 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          signal: controller.signal
+        });
+
+        if (!mounted) return;
+
+        if (!res.ok) {
+          const text = await res.text().catch(() => null);
+          throw new Error(text ? `Server error ${res.status}: ${text}` : `HTTP ${res.status}`);
+        }
+
+        const json = await res.json().catch(() => []);
+        const arr = Array.isArray(json) ? json : (json.rows ?? json.data ?? []);
+
+        const mapped = arr.map(mapReferral);
+
+        setItems(mapped);
+        setLoadError(mapped.length ? null : 'No se encontraron referencias para la unidad del administrador.');
+      } catch (err: any) {
+        if (err.name !== 'AbortError') {
+          setLoadError(err.message ?? 'Error cargando referencias');
+          setItems([]);
+        }
+      } finally {
+        if (mounted) setIsLoading(false);
+      }
+    };
+
+    // llamada inicial
+    fetchReferralsForUnit();
+
+    return () => {
+      mounted = false;
+      controller.abort();
+    };
+  }, [user]);
+
+  const rowsPerPage = 8;
+
+  const filtered = React.useMemo(() => {
+    const q = String(searchTerm ?? '').trim().toLowerCase();
+    let base = items;
+
+    // aplicar filtro por estado según pestaña
+    if (selectedTab !== 'all') {
+      base = base.filter(i => {
+        const s = (i.status ?? '').toString().toLowerCase();
+        if (selectedTab === 'pending') return s.includes('pend') || s.includes('env'); // <-- aceptar 'enviada' como pendiente/en proceso
+        if (selectedTab === 'accepted') return s.includes('acept') || s.includes('accept');
+        if (selectedTab === 'completed') return s.includes('comp');
+        if (selectedTab === 'rejected') return s.includes('rech') || s.includes('reject');
+        return true;
+      });
+    }
+
+    if (!q) return base;
+
+    const isNumeric = /^\d+$/.test(q);
+    if (isNumeric) {
+      const exact = base.filter (i => String(i.no_folio ?? i.id).toLowerCase() === q);
+      if (exact.length) return exact;
+    }
+
+    return base.filter(i => {
+      return (
+        (i.paciente ?? '').toLowerCase().includes(q) ||
+        (i.apellidoPaterno ?? '').toLowerCase().includes(q) ||
+        (i.apellidoMaterno ?? '').toLowerCase().includes(q) ||
+        (i.no_folio ?? '').toLowerCase().includes(q) ||
+        (i.id ?? '').toLowerCase().includes(q)
+      );
     });
-  };
-  
-  const handleActivateDocument = (documentId: string) => {
-    setDocuments(documents.map(doc => 
-      doc.id === documentId 
-        ? { ...doc, status: 'Active' as const } 
-        : doc
-    ));
-    
-    addToast({
-      title: "Document Activated",
-      description: `Document ${documentId} has been activated successfully`,
-      color: "success"
-    });
-  };
-  
-  const handleApproveDocument = (documentId: string) => {
-    setDocuments(documents.map(doc => 
-      doc.id === documentId 
-        ? { ...doc, status: 'Active' as const } 
-        : doc
-    ));
-    
-    addToast({
-      title: "Document Approved",
-      description: `Document ${documentId} has been approved and is now active`,
-      color: "success"
-    });
-  };
-  
-  const getStatusColor = (status: Document['status']) => {
-    switch (status) {
-      case 'Active': return 'success';
-      case 'Archived': return 'default';
-      case 'Pending Review': return 'warning';
-      default: return 'default';
+  }, [items, searchTerm, selectedTab]);
+
+  const pages = Math.max(1, Math.ceil(filtered.length / rowsPerPage));
+  const paginated = filtered.slice((page - 1) * rowsPerPage, page * rowsPerPage);
+
+  // función para enviar referencia al director
+  const sendToDirector = async (refId: string | number) => {
+    if (!window.confirm('Enviar esta referencia al director de la unidad para autorización?')) return;
+    const token = localStorage.getItem('token');
+    try {
+      const res = await fetch(`${API_BASE}/referrals/${refId}/send-to-director`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }
+      });
+      if (!res.ok) {
+        const txt = await res.text().catch(() => null);
+        throw new Error(txt || `Server ${res.status}`);
+      }
+
+      // intentar leer respuesta: backend normalmente devuelve { message, referral }
+      const json = await res.json().catch(() => null);
+      const newEstado = (json?.referral?.estado ?? json?.estado) ?? 'Enviada';
+
+      addToast({ title: 'Enviado', description: 'Referencia enviada al director', color: 'success' });
+
+      // actualizar el item en lugar de quitarlo para que la tabla muestre el nuevo estado
+      setItems(prev => prev.map(i => {
+        if (String(i.rawId ?? i.id) !== String(refId)) return i;
+        return {
+          ...i,
+          status: newEstado,
+          _raw: { ...(i._raw ?? {}), estado: newEstado }
+        };
+      }));
+    } catch (err: any) {
+      addToast({ title: 'Error', description: err?.message ?? 'Error enviando referencia', color: 'danger' });
     }
   };
-  
-  const getDocumentTypeIcon = (type: Document['type']) => {
-    switch (type) {
-      case 'Medical Record': return 'lucide:clipboard';
-      case 'Lab Result': return 'lucide:flask-conical';
-      case 'Prescription': return 'lucide:pill';
-      case 'Referral': return 'lucide:send';
-      case 'Consent Form': return 'lucide:file-signature';
-      default: return 'lucide:file';
-    }
-  };
-  
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <h1 className="text-2xl font-bold text-foreground">Document Management</h1>
+        <h1 className="text-2xl font-bold text-foreground">Referencias Emitidas</h1>
         <div className="flex gap-2">
-          <Button color="primary" startContent={<Icon icon="lucide:upload" />} onPress={onOpen}>
-            Upload Document
-          </Button>
-          <Button variant="flat" startContent={<Icon icon="lucide:download" />}>
-            Export List
+          <Button color="primary" onPress={() => navigate('/administrativo/referral/nueva')} startContent={<Icon icon="lucide:plus" />}>
+            New
           </Button>
         </div>
       </div>
-      
-      <motion.div 
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.4 }}
-      >
-        <Card className="border border-default-200">
-          <CardBody>
-            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
-              <Input
-                placeholder="Search by document name, patient or ID..."
-                value={searchTerm}
-                onValueChange={setSearchTerm}
-                startContent={<Icon icon="lucide:search" className="text-default-400" />}
-                className="w-full sm:max-w-xs"
-              />
-              
-              <div className="flex gap-2">
-                <Dropdown>
-                  <DropdownTrigger>
-                    <Button variant="flat" endContent={<Icon icon="lucide:chevron-down" />}>
-                      {selectedDocType === 'all' ? 'All Document Types' : selectedDocType}
-                    </Button>
-                  </DropdownTrigger>
-                  <DropdownMenu 
-                    aria-label="Document type filter"
-                    selectedKeys={[selectedDocType]}
-                    onSelectionChange={(keys) => {
-                      const selected = Array.from(keys)[0] as string;
-                      setSelectedDocType(selected);
-                    }}
-                    selectionMode="single"
-                  >
-                    <DropdownItem key="all">All Document Types</DropdownItem>
-                    <DropdownItem key="Medical Record">Medical Records</DropdownItem>
-                    <DropdownItem key="Lab Result">Lab Results</DropdownItem>
-                    <DropdownItem key="Prescription">Prescriptions</DropdownItem>
-                    <DropdownItem key="Referral">Referrals</DropdownItem>
-                    <DropdownItem key="Consent Form">Consent Forms</DropdownItem>
-                    <DropdownItem key="Other">Other Documents</DropdownItem>
-                  </DropdownMenu>
-                </Dropdown>
-                
-                <Dropdown>
-                  <DropdownTrigger>
-                    <Button variant="flat" endContent={<Icon icon="lucide:filter" />}>
-                      Status
-                    </Button>
-                  </DropdownTrigger>
-                  <DropdownMenu aria-label="Status filter">
-                    <DropdownItem key="all">All Statuses</DropdownItem>
-                    <DropdownItem key="active">Active</DropdownItem>
-                    <DropdownItem key="archived">Archived</DropdownItem>
-                    <DropdownItem key="pending">Pending Review</DropdownItem>
-                  </DropdownMenu>
-                </Dropdown>
-              </div>
-            </div>
-            
-            <Table 
-              aria-label="Documents table"
-              removeWrapper
-              bottomContent={
-                <div className="flex w-full justify-center">
-                  <Pagination
-                    isCompact
-                    showControls
-                    showShadow
-                    color="primary"
-                    page={page}
-                    total={pages}
-                    onChange={setPage}
-                  />
-                </div>
-              }
-            >
-              <TableHeader>
-                <TableColumn>ID</TableColumn>
-                <TableColumn>DOCUMENT</TableColumn>
-                <TableColumn>TYPE</TableColumn>
-                <TableColumn>PATIENT</TableColumn>
-                <TableColumn>UPLOADED BY</TableColumn>
-                <TableColumn>DATE</TableColumn>
-                <TableColumn>STATUS</TableColumn>
-                <TableColumn>ACTIONS</TableColumn>
-              </TableHeader>
-              <TableBody 
-                isLoading={isLoading}
-                loadingContent={<div className="py-8">Loading documents...</div>}
-                emptyContent={<div className="py-8">No documents found</div>}
-              >
-                {paginatedDocuments.map((document) => (
-                  <TableRow key={document.id}>
-                    <TableCell>{document.id}</TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        <Icon icon={getDocumentTypeIcon(document.type)} className="text-default-500" />
-                        <span className="max-w-[200px] truncate">{document.name}</span>
-                      </div>
-                    </TableCell>
-                    <TableCell>{document.type}</TableCell>
-                    <TableCell>
-                      <div>
-                        <div>{document.patientName}</div>
-                        <div className="text-tiny text-foreground-500">ID: {document.patientId}</div>
-                      </div>
-                    </TableCell>
-                    <TableCell>{document.uploadedBy}</TableCell>
-                    <TableCell>
-                      <div>
-                        <div>{document.uploadDate}</div>
-                        <div className="text-tiny text-foreground-500">{document.size}</div>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <Chip 
-                        size="sm" 
-                        color={getStatusColor(document.status)}
-                        variant="flat"
-                      >
-                        {document.status}
-                      </Chip>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex gap-2">
-                        <Button isIconOnly size="sm" variant="light">
-                          <Icon icon="lucide:eye" className="text-default-500" />
-                        </Button>
-                        <Button isIconOnly size="sm" variant="light">
-                          <Icon icon="lucide:download" className="text-default-500" />
-                        </Button>
-                        <Dropdown>
-                          <DropdownTrigger>
-                            <Button isIconOnly size="sm" variant="light">
-                              <Icon icon="lucide:more-vertical" className="text-default-500" />
-                            </Button>
-                          </DropdownTrigger>
-                          <DropdownMenu aria-label="Actions">
-                            <DropdownItem key="view">View Document</DropdownItem>
-                            <DropdownItem key="download">Download</DropdownItem>
-                            <DropdownItem key="share">Share Document</DropdownItem>
-                            {document.status === 'Active' && (
-                              <DropdownItem 
-                                key="archive" 
-                                onPress={() => handleArchiveDocument(document.id)}
-                              >
-                                Archive Document
-                              </DropdownItem>
-                            )}
-                            {document.status === 'Archived' && (
-                              <DropdownItem 
-                                key="activate" 
-                                onPress={() => handleActivateDocument(document.id)}
-                              >
-                                Activate Document
-                              </DropdownItem>
-                            )}
-                            {document.status === 'Pending Review' && (
-                              <DropdownItem 
-                                key="approve" 
-                                onPress={() => handleApproveDocument(document.id)}
-                              >
-                                Approve Document
-                              </DropdownItem>
-                            )}
-                            <DropdownItem 
-                              key="delete" 
-                              className="text-danger"
-                              description="This action cannot be undone"
-                            >
-                              Delete Document
-                            </DropdownItem>
-                          </DropdownMenu>
-                        </Dropdown>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </CardBody>
-        </Card>
+
+      <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
+        <div className="flex gap-6">
+          <div className="flex-1">
+            <Card className="border border-default-200">
+              <CardBody>
+                 <Tabs aria-label="Referral status tabs" selectedKey={selectedTab} onSelectionChange={setSelectedTab as any} className="mb-4">
+                   <Tab key="all" title="Todas las Referencias" />
+                   <Tab key="pending" title="Pendientes" />
+                   <Tab key="accepted" title="Aceptadas" />
+                   <Tab key="completed" title="Completadas" />
+                   <Tab key="rejected" title="Rechazadas" />
+                 </Tabs>
+
+                 <div className="mb-4">
+                   <Input
+                     placeholder="Buscar por paciente, folio o ID..."
+                     value={searchTerm}
+                     onValueChange={setSearchTerm}
+                     startContent={<Icon icon="lucide:search" className="text-default-400" />}
+                     className="w-full sm:max-w-xs"
+                   />
+                 </div>
+
+                 <Table
+                   aria-label="Referrals table"
+                   removeWrapper
+                   bottomContent={
+                     <div className="flex w-full justify-center">
+                       <Pagination isCompact showControls showShadow color="primary" page={page} total={pages} onChange={setPage} />
+                     </div>
+                   }
+                 >
+                   <TableHeader>
+                     <TableColumn>NO.SOLICITUD / FOLIO</TableColumn>
+                     <TableColumn>PACIENTE</TableColumn>
+                     <TableColumn>SPECIALTY</TableColumn>
+                     <TableColumn>PRIORIDAD</TableColumn>
+                     <TableColumn>STATUS</TableColumn>
+                     <TableColumn>FECHA</TableColumn>
+                     <TableColumn>ACCIONES</TableColumn>
+                   </TableHeader>
+
+                   <TableBody
+                     isLoading={isLoading}
+                     loadingContent={<div className="py-8">Cargando referencias...</div>}
+                     emptyContent={<div className="py-8">{loadError ? loadError : 'No se encontraron referencias'}</div>}
+                   >
+                     {paginated.map((r) => (
+                       <TableRow key={r.id}>
+                         <TableCell>{r.no_folio || r.id}</TableCell>
+                         <TableCell>
+                           <div>
+                             <div className="font-medium">{[r.paciente, r.apellido_paterno, r.apellidoMaterno].filter(Boolean).join(' ')}</div>
+                           </div>
+                         </TableCell>
+                         <TableCell>{r.specialty}</TableCell>
+                         <TableCell>
+                           <Chip size="sm" color={String(r.prioridad ?? '').toLowerCase().includes('alta') ? 'danger' : String(r.prioridad ?? '').toLowerCase().includes('baja') ? 'success' : 'warning'} variant="flat">
+                             {r.prioridad}
+                           </Chip>
+                         </TableCell>
+                         <TableCell>
+                           <Chip size="sm" color={String(r.status ?? '').toLowerCase().includes('pend') ? 'warning' : String(r.status ?? '').toLowerCase().includes('acept') ? 'primary' : String(r.status ?? '').toLowerCase().includes('comp') ? 'success' : 'danger'} variant="flat">
+                             {r.status}
+                           </Chip>
+                         </TableCell>
+                         <TableCell>{r.fecha ? new Date(r.fecha).toLocaleString() : '-'}</TableCell>
+                         <TableCell>
+                           <div className="flex gap-2">
+                             <Button isIconOnly size="sm" variant="light" onPress={() => {
+                               const realId = (r as any).rawId ?? r.id;
+                               setDetailId(String(realId));
+                               setDetailOpen(true);
+                             }}>
+                               <Icon icon="lucide:eye" className="text-default-500" />
+                             </Button>
+                             <Button isIconOnly size="sm" variant="light" onPress={() => {
+                               // usar la misma navegación que el listado del médico para evitar diferencias de ruta
+                               navigate('/doctor/referrals/NuevaReferencia', { state: { edit: true, referral: (r as any)._raw ?? r } });
+                             }}>
+                               <Icon icon="lucide:edit" className="text-default-500" />
+                             </Button>
+                             <Button isIconOnly size="sm" variant="light" onPress={() => {
+                               // enviar directamente al director de la unidad
+                               const realId = (r as any).rawId ?? r.id;
+                               sendToDirector(realId);
+                             }}>
+                               <Icon icon="lucide:reply" className="text-primary" />
+                             </Button>
+                           </div>
+                         </TableCell>
+                       </TableRow>
+                     ))}
+                   </TableBody>
+                 </Table>
+              </CardBody>
+            </Card>
+          </div>
+        </div>
       </motion.div>
-      
-      {/* Upload Document Modal */}
-      <Modal isOpen={isOpen} onOpenChange={onOpenChange} size="lg">
-        <ModalContent>
-          {(onClose) => (
-            <>
-              <ModalHeader className="flex flex-col gap-1">Upload New Document</ModalHeader>
-              <ModalBody>
-                <div className="space-y-4">
-                  <div className="border-2 border-dashed border-default-200 rounded-lg p-8 text-center">
-                    <Icon icon="lucide:upload-cloud" className="text-4xl text-default-400 mx-auto mb-2" />
-                    <p className="text-foreground-600 mb-2">Drag and drop your files here or click to browse</p>
-                    <p className="text-tiny text-foreground-500">Supported formats: PDF, JPG, PNG, DOCX (Max 10MB)</p>
-                    <Button 
-                      color="primary" 
-                      variant="flat" 
-                      className="mt-4"
-                      startContent={<Icon icon="lucide:upload" />}
-                    >
-                      Select Files
-                    </Button>
-                  </div>
-                  
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <Input
-                      label="Document Name"
-                      placeholder="Enter document name"
-                      isRequired
-                    />
-                    
-                    <Input
-                      label="Document Type"
-                      placeholder="Select document type"
-                      isRequired
-                    />
-                    
-                    <Input
-                      label="Patient ID"
-                      placeholder="Enter patient ID"
-                      isRequired
-                    />
-                    
-                    <Input
-                      label="Patient Name"
-                      placeholder="Enter patient name"
-                      isRequired
-                    />
-                  </div>
-                  
-                  <Input
-                    label="Additional Notes"
-                    placeholder="Enter any additional notes about this document"
-                  />
-                </div>
-              </ModalBody>
-              <ModalFooter>
-                <Button variant="flat" onPress={onClose}>
-                  Cancel
-                </Button>
-                <Button color="primary" onPress={onClose}>
-                  Upload Document
-                </Button>
-              </ModalFooter>
-            </>
-          )}
-        </ModalContent>
-      </Modal>
-    </div>
-  );
-};
+
+       {/* Modal de detalle (reusar componente del médico) */}
+       <ReferralDetailModal
+         referralId={detailId}
+         isOpen={detailOpen}
+         onClose={() => { setDetailOpen(false); setDetailId(null); }}
+       />
+     </div>
+   );
+ };

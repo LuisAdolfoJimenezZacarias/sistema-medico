@@ -41,7 +41,21 @@ const mapReferral = (r: any): Referral & { rawId?: number | string; _raw?: any }
   specialty: r.especialidad_ref?.nombre ?? r.especialidad?.nombre ?? r.servicio ?? r.specialty ?? '',
   reason: r.motivo_envio ?? r.reason ?? r.resumen_clinico ?? '',
   priority: (r.prioridad ? (String(r.prioridad).toLowerCase().includes('alta') ? 'High' : String(r.prioridad).toLowerCase().includes('baja') ? 'Low' : 'Medium') : 'Medium') as 'High'|'Medium'|'Low',
-  status: (r.estado ? (String(r.estado).toLowerCase().includes('pend') ? 'Pending' : String(r.estado).toLowerCase().includes('acept') ? 'Accepted' : String(r.estado).toLowerCase().includes('comp') ? 'Completed' : 'Rejected') : 'Pending') as any,
+  // antes: esta línea convertía cualquier valor desconocido a 'Rejected'
+  // status: (r.estado ? (String(r.estado).toLowerCase().includes('pend') ? 'Pending' : String(r.estado).toLowerCase().includes('acept') ? 'Accepted' : String(r.estado).toLowerCase().includes('comp') ? 'Completed' : 'Rejected') : 'Pending') as any,
+
+  // reemplazar por:
+  status: (() => {
+    const raw = String(r.estado ?? '').toLowerCase();
+    if (!raw) return 'Pending';
+    if (raw.includes('pend')) return 'Pending';
+    if (raw.includes('envi')) return 'Pending'; // 'Enviada' -> tratar como pendiente/enviada al director
+    if (raw.includes('acept')) return 'Accepted';
+    if (raw.includes('comp')) return 'Completed';
+    if (raw.includes('rech')) return 'Rejected';
+    // fallback seguro: no asumir rechazo, marcar como pendiente u 'Unknown'
+    return 'Pending';
+  })() as any,
   referringDoctor: r.medico_solicitante ?? r.referringDoctor ?? '',
   referringFacility: r.unidad_origen_nombre ?? r.referringFacility ?? '',
   referredDoctor: String(r.id_medico_destino ?? r.referredDoctor ?? ''),
@@ -260,25 +274,7 @@ export const ReferenciasEmitidas: React.FC = () => {
                 className="w-full sm:max-w-xs"
               />
               
-              <div className="flex gap-2">
-                <Dropdown>
-                  <DropdownTrigger>
-                    <Button variant="flat" endContent={<Icon icon="lucide:chevron-down" />}>
-                      Filter
-                    </Button>
-                  </DropdownTrigger>
-                  <DropdownMenu aria-label="Filter options">
-                    <DropdownItem key="all">All Priorities</DropdownItem>
-                    <DropdownItem key="high">High Priority</DropdownItem>
-                    <DropdownItem key="medium">Medium Priority</DropdownItem>
-                    <DropdownItem key="low">Low Priority</DropdownItem>
-                  </DropdownMenu>
-                </Dropdown>
-                
-                <Button variant="flat" startContent={<Icon icon="lucide:download" />}>
-                  Export
-                </Button>
-              </div>
+              
             </div>
             
             <Table 

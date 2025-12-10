@@ -19,134 +19,76 @@ export default function ReferralDetailModal({ referralId, isOpen, onClose }: Pro
   const contentRef = React.useRef<HTMLDivElement | null>(null);
 
   const handlePrint = () => {
-    const original = contentRef.current;
-    if (!original) return console.warn('No hay contenido para imprimir');
-
     const doc = data ?? {};
     const refId = doc.folio ?? doc.no_folio ?? doc._raw?.id ?? new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
-    const filename = 'Referencia_' + String(refId);
+    const filename = `Referencia_${refId}`;
 
-    // helper para escapar texto y evitar que HTML romp a la plantilla
-    const escapeHtml = (s: any) => {
-      const str = String(s ?? '');
-      return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-    };
-
-    // clonar nodo para transformar sin tocar DOM real
-    const clone = original.cloneNode(true) as HTMLElement;
-
-    // reemplazar controles por texto legible para impresión
-    const replaceControls = (root: HTMLElement) => {
-      Array.from(root.querySelectorAll('input')).forEach((n) => {
-        const inp = n as HTMLInputElement;
-        const span = document.createElement('span');
-        span.className = 'print-value';
-        if (inp.type === 'checkbox' || inp.type === 'radio') span.textContent = inp.checked ? 'Sí' : 'No';
-        else span.textContent = inp.value ?? inp.getAttribute('value') ?? '';
-        n.parentNode?.replaceChild(span, n);
-      });
-      Array.from(root.querySelectorAll('select')).forEach((n) => {
-        const s = n as HTMLSelectElement;
-        const span = document.createElement('span');
-        span.className = 'print-value';
-        span.textContent = (s.selectedOptions && s.selectedOptions.length) ? Array.from(s.selectedOptions).map(o => o.text).join(', ') : s.value ?? '';
-        n.parentNode?.replaceChild(span, n);
-      });
-      Array.from(root.querySelectorAll('textarea')).forEach((n) => {
-        const ta = n as HTMLTextAreaElement;
-        const div = document.createElement('div');
-        div.className = 'print-value print-textarea';
-        div.innerHTML = (ta.value || '').replace(/\n/g, '<br/>');
-        n.parentNode?.replaceChild(div, n);
-      });
-      Array.from(root.querySelectorAll('button, a, .no-print, [data-no-print]')).forEach(n => n.parentNode?.removeChild(n));
-    };
-
-    replaceControls(clone);
-
-    // construir el bloque de "Información de la Solicitud" con los datos mapeados
-    const solicitudHtml =
-      '<div class="print-info-section" style="border:1px solid #e6e6e6;padding:8px;border-radius:6px;margin-bottom:8px;">' +
-        '<h3 style="margin:0 0 6px;font-size:14px;color:#111;">Información de la Solicitud</h3>' +
-        '<div style="display:flex;flex-wrap:wrap;gap:8px;">' +
-          '<div style="min-width:220px;"><strong>Tipo de solicitud:</strong><div>' + escapeHtml(doc.tipo_solicitud || '') + '</div></div>' +
-          '<div style="min-width:220px;"><strong>Tipo de paciente:</strong><div>' + escapeHtml(doc.tipo_paciente || '') + '</div></div>' +
-          '<div style="min-width:220px;"><strong>No. Expediente:</strong><div>' + escapeHtml(doc.no_expediente || '') + '</div></div>' +
-          '<div style="min-width:220px;"><strong>No. solicitud / folio:</strong><div>' + escapeHtml(doc.folio ?? doc.no_folio ?? '') + '</div></div>' +
-          '<div style="min-width:220px;"><strong>Fecha de solicitud:</strong><div>' + escapeHtml(doc.fecha_solicitud ? String(doc.fecha_solicitud).slice(0,10) : '') + '</div></div>' +
-        '</div>' +
-      '</div>';
-
-    // envolver en estructura de impresión (mantener orden/estilos)
-    const wrapper = document.createElement('div');
-    wrapper.id = 'print-wrapper';
-    wrapper.style.boxSizing = 'border-box';
-
-    // añadir encabezado impreso (titulo + info de solicitud) antes del contenido clonado
-    const headerContainer = document.createElement('div');
-    headerContainer.innerHTML =
-      '<div style="margin-bottom:10px;">' +
-        '<h1 style="font-size:18px;margin:0 0 6px;color:#1f4ed8;">Hoja de Referencia Médica</h1>' +
-        '</div>' +
-        solicitudHtml;
-    wrapper.appendChild(headerContainer);
-    wrapper.appendChild(clone);
-
-    // head + CSS de impresión (mantiene head para estilos globales y añade reglas print que conservan diseño)
-    const headHtml = document.head.innerHTML;
-    const printCss =
-      '<style>' +
-      '@page{size:letter;margin:12mm;} ' +
-      'html,body{margin:0;padding:0;background:white;color:#111;font-family:inherit;} ' +
-      '#print-wrapper{width:100%;max-width:216mm;box-sizing:border-box;padding:6mm;} ' +
-      '#print-wrapper{font-size:11px;line-height:1.05;} ' +
-      '#print-wrapper .print-textarea{white-space:pre-wrap;word-break:break-word;} ' +
-      '.print-value{color:inherit;} ' +
-      'button,a,input,textarea,select{display:none !important;} ' +
-      '.print-two-col{display:grid;grid-template-columns:1fr 1fr;gap:8px;} ' +
-      '.print-full{grid-column:1 / -1;} ' +
-      // asegurar que los estilos del header no se pierdan
-      '.print-info-section h3{margin:0 0 6px;font-weight:600;} ' +
-      '</style>';
-
-    // script que ajusta escala SOLO si es estrictamente necesario (preservar nitidez)
-    const fitScript =
-      '<script>' +
-      'function mmToPx(mm){return Math.round(mm * 96 / 25.4);} ' +
-      'function fitAndPrint(){' +
-        'try{' +
-          'var content=document.getElementById("print-wrapper"); if(!content){ window.print(); return; }' +
-          'var availH = mmToPx(279.4 - 24); /* Letter height minus margins */' +
-          'var contentH = content.scrollHeight; var scale = 1;' +
-          'if(contentH > availH){ scale = Math.max(0.65, availH / contentH); /* no escalar menos de 0.65 para mantener legibilidad */ }' +
-          'if(scale < 1){ content.style.transformOrigin="top left"; content.style.transform="scale("+scale+")"; }' +
-          'setTimeout(function(){ window.print(); }, 300);' +
-        '}catch(e){ console.error(e); window.print(); }' +
-      '}' +
-      'window.addEventListener("load", function(){ setTimeout(fitAndPrint, 300); });' +
-      '</script>';
-
-    // construir HTML por concatenación
-    let html = '<!doctype html><html><head><title>' + filename + '</title>' + headHtml + printCss + '</head><body>';
-    html += wrapper.outerHTML;
-    html += fitScript;
-    html += '</body></html>';
-
-    // abrir ventana e imprimir
+    const rawContent = contentRef.current?.innerHTML ?? '<div>No hay contenido para imprimir</div>';
     const printWindow = window.open('', '_blank', 'width=900,height=700');
-    if (!printWindow) return console.warn('No se pudo abrir ventana de impresión');
-    try {
-      printWindow.document.open();
-      printWindow.document.write(html);
-      printWindow.document.close();
-      printWindow.document.title = filename;
-      printWindow.focus();
-      // cierre opcional (el script interno lanza print)
-      setTimeout(() => { try { printWindow.close(); } catch (e) {} }, 5000);
-    } catch (err) {
-      console.error('Error al preparar impresión', err);
-      try { printWindow.close(); } catch (e) {}
+    if (!printWindow) {
+      console.warn('No se pudo abrir ventana de impresión');
+      return;
     }
+
+    // Clonar head para mantener estilos globales y añadir reglas de impresión + escala a 1 hoja Letter
+    const headHtml = document.head.innerHTML;
+    const extraStylesAndScript = `
+      <style>
+        @page { size: Letter; margin: 12mm; }
+        html,body{margin:0;padding:0;height:100%;width:100%;font-family:inherit;color:inherit;background:white;-webkit-print-color-adjust:exact;color-adjust:exact;}
+        /* caja de impresión que usa todo el ancho disponible, sin escalado (mejor calidad) */
+        .print-sheet { box-sizing: border-box; width:100%; max-width:216mm; min-height:279.4mm; padding:12mm; margin:0 auto; background:white; }
+        #print-content { width:100%; box-sizing: border-box; }
+        /* asegurar imágenes y svg responsivos dentro de la hoja */
+        #print-content img, #print-content svg { max-width:100%; height:auto; image-rendering: optimizeQuality; }
+        /* prevenir que controles interactivos aparezcan en impresión */
+        button, a, input, textarea, [role="button"] { display:none !important; }
+        /* evitar quiebres dentro de bloques importantes */
+        .no-break { page-break-inside: avoid; }
+        /* reglas específicas para impresión */
+        @media print {
+          body { margin:0; }
+          .print-sheet { box-shadow:none; margin:0; padding:10mm; width:100%; }
+          /* forzar color real en impresión */
+          * { -webkit-print-color-adjust: exact; color-adjust: exact; }
+        }
+      </style>
+      <script>
+        // Esperar a que imágenes externas carguen y luego notificar ready; ya no escalamos con transform para preservar calidad
+        function waitForMediaAndReady(cb){
+          var imgs = Array.from(document.querySelectorAll('#print-content img'));
+          if (!imgs.length) return cb();
+          var loaded = 0;
+          imgs.forEach(function(i){
+            if (i.complete) { loaded++; if (loaded===imgs.length) cb(); return; }
+            i.addEventListener('load', function(){ loaded++; if (loaded===imgs.length) cb(); });
+            i.addEventListener('error', function(){ loaded++; if (loaded===imgs.length) cb(); });
+          });
+        }
+        window.addEventListener('load', function(){ setTimeout(function(){ waitForMediaAndReady(function(){ /* listo para imprimir */ }); }, 150); });
+      </script>
+    `;
+    const bodyHtml = `
+      <div id="print-wrapper">
+        <div class="print-sheet">
+          <div id="print-content" class="no-break">${rawContent}</div>
+        </div>
+      </div>
+    `;
+
+    // construir documento completo manteniendo head (estilos) + extras
+    printWindow.document.open();
+    // usar concatenación para evitar problemas de parsing con caracteres especiales en headHtml
+    printWindow.document.write('<!doctype html><html><head><title>' + filename + '</title>' + headHtml + extraStylesAndScript + '</head><body>' + bodyHtml + '</body></html>');
+    printWindow.document.close();
+    printWindow.document.title = filename;
+    printWindow.focus();
+
+    // dar tiempo a cargar recursos y luego imprimir
+    setTimeout(() => {
+      printWindow.print();
+      printWindow.close();
+    }, 900);
   };
 
   React.useEffect(() => {

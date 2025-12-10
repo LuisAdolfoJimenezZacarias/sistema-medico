@@ -22,7 +22,7 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
         <NavbarBrand>
           <Link to="/admin/dashboard" className="flex items-center gap-2">
             <Icon icon="lucide:shield" className="text-primary text-2xl" />
-            <p className="font-bold text-inherit">MedRef Admin</p>
+            <p className="font-bold text-inherit">Sistema de Referencias Medicas</p>
           </Link>
         </NavbarBrand>
         
@@ -48,7 +48,7 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
           <NavbarItem isActive={isActive('/admin/documents')}>
             <Link to="/admin/documents" className={`flex items-center gap-1 ${isActive('/admin/documents') ? 'text-primary' : 'text-foreground-500'}`}>
               <Icon icon="lucide:file-text" />
-              <span>Documents</span>
+              <span>Referencias Emitidas</span>
             </Link>
           </NavbarItem>
         </NavbarContent>
@@ -115,7 +115,7 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
           </Link>
           <Link to="/admin/documents" className={`flex flex-col items-center p-2 ${isActive('/admin/documents') ? 'text-primary' : 'text-foreground-500'}`}>
             <Icon icon="lucide:file-text" className="text-xl" />
-            <span className="text-tiny">Documents</span>
+            <span className="text-tiny">Referencias Emitidas</span>
           </Link>
         </div>
       </div>

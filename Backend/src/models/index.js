@@ -228,6 +228,16 @@ if (ReferralModel && EspecialidadModel) {
   EspecialidadModel.hasMany(ReferralModel, { foreignKey: 'id_especialidad_solicitada', as: 'referencias_por_especialidad' });
 }
 
+// registrar CounterReferral (ajusta según estilo de tu file: factory vs clase)
+try {
+  const CounterReferral = (typeof CounterReferralModel === 'function' && CounterReferralModel.length === 1)
+    ? CounterReferralModel(sequelize) // factory(style)
+    : CounterReferralModel;           // already initialized class-style
+  db.CounterReferral = CounterReferral;
+} catch (e) {
+  console.debug('CounterReferral model registration skipped or failed', e?.message ?? e);
+}
+
 // exportar las instancias en db
 const db = {
   sequelize,

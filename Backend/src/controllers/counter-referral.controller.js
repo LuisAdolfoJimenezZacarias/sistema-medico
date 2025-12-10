@@ -2,6 +2,9 @@ import CounterReferral from '../models/counter-referral.model.js';
 import Referral from '../models/referral.model.js';
 import Patient from '../models/patient.model.js';
 import User from '../models/user.model.js';
+import Medico from '../models/medico.model.js'; // <-- agregar
+import db from '../models/index.js';
+const { sequelize } = db;
 
 // Get all counter-referrals
 export const getAllCounterReferrals = async (req, res) => {
@@ -82,59 +85,78 @@ export const getCounterReferralById = async (req, res) => {
 // Create new counter-referral
 export const createCounterReferral = async (req, res) => {
   try {
+    // aceptar tanto id_referencia como referralId desde el cliente
     const {
+      id_referencia,
       referralId,
-      diagnosis,
-      treatment,
-      followUpNeeded,
-      followUpInstructions,
-      notes
+      fecha_ingreso,
+      fecha_egreso,
+      dias_estancia,
+      diagnostico_egreso,
+      diagnostico_complicaciones,
+      resumen_clinico,
+      id_servicio_tratante,
+      servicio_recibio,
+      institucion_recibio,
+      unidad_medica_solicito,
+      no_expediente,
+      telefono,
+      nombre_paciente,
+      apellido_paterno,
+      apellido_materno,
+      curp,
+      edad,
+      sexo,
+      medico_tratante,
+      director_unidad,
+      id_director_unidad
     } = req.body;
-    
-    // Check if referral exists
-    const referral = await Referral.findByPk(referralId, {
-      include: [
-        {
-          model: User,
-          as: 'referringDoctor',
-          attributes: ['id']
-        }
-      ]
-    });
-    
+
+    const refId = Number(id_referencia ?? referralId ?? null);
+    if (!refId) {
+      return res.status(400).json({ message: 'Missing id_referencia' });
+    }
+
+    // buscar referencia por PK (asegúrate que el modelo Referral tiene PK correcto)
+    const referral = await Referral.findByPk(refId);
     if (!referral) {
       return res.status(404).json({ message: 'Referral not found' });
     }
-    
-    // Generate counter-referral ID
-    const counterReferralCount = await CounterReferral.count();
-    const currentYear = new Date().getFullYear();
-    const counterReferralId = `CR-${currentYear}-${String(counterReferralCount + 1).padStart(3, '0')}`;
-    
-    // Create counter-referral
-    const counterReferral = await CounterReferral.create({
-      counterReferralId,
-      referralId,
-      diagnosis,
-      treatment,
-      followUpNeeded: followUpNeeded || false,
-      followUpInstructions,
-      referringDoctorId: req.userId,
-      referredDoctorId: referral.referringDoctor.id,
-      status: 'Pending',
-      notes,
-      dateCreated: new Date()
+
+    // determinar id_medico_tratante a partir del usuario autenticado (si existe tabla Medico)
+    let idMedicoTratante = null;
+    try {
+      const medico = await Medico.findOne({ where: { id_usuario: req.userId } });
+      if (medico) idMedicoTratante = medico.id_medico ?? medico.id;
+    } catch (e) { /* noop */ }
+
+    // crear registro usando nombres de columnas que tienes en la BD
+    const counter = await CounterReferral.create({
+      id_referencia: refId,
+      fecha_ingreso: fecha_ingreso ?? null,
+      fecha_egreso: fecha_egreso ?? null,
+      dias_estancia: dias_estancia != null ? Number(dias_estancia) : null,
+      diagnostico_egreso: diagnostico_egreso ?? null,
+      diagnostico_complicaciones: diagnostico_complicaciones ?? null,
+      resumen_clinico: resumen_clinico ?? null,
+      id_medico_tratante: idMedicoTratante,
+      id_director_unidad: id_director_unidad ?? null,
+      id_servicio_tratante: id_servicio_tratante ?? null,
+      fecha_creacion: new Date()
     });
-    
-    // Update referral status to Completed
-    await referral.update({ status: 'Completed', dateCompleted: new Date() });
-    
-    res.status(201).json({
-      message: 'Counter-referral created successfully',
-      counterReferral
-    });
+
+    // intentar actualizar estado de la referencia (si tu tabla Referral tiene esas columnas)
+    try {
+      await referral.update({ status: 'Completed', dateCompleted: new Date() });
+    } catch (e) {
+      // noop: si la referencia no tiene esos campos no interrumpe el flujo
+      console.debug('Referral status update skipped or failed', e?.message ?? e);
+    }
+
+    return res.status(201).json({ message: 'Contrarreferencia creada', counter });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error('createCounterReferral error', error);
+    return res.status(500).json({ message: error.message });
   }
 };
 
