@@ -51,6 +51,13 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
               <span>Referencias Emitidas</span>
             </Link>
           </NavbarItem>
+
+          <NavbarItem isActive={isActive('/admin/ReferenciasRecibidas')}>
+            <Link to="/admin/ReferenciasRecibidas" className={`flex items-center gap-1 ${isActive('/admin/ReferenciasRecibidas') ? 'text-primary' : 'text-foreground-500'}`}>
+              <Icon icon="lucide:inbox" />
+              <span>Referencias Recibidas</span>
+            </Link>
+          </NavbarItem>
         </NavbarContent>
         
         <NavbarContent justify="end">
@@ -116,6 +123,11 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
           <Link to="/admin/documents" className={`flex flex-col items-center p-2 ${isActive('/admin/documents') ? 'text-primary' : 'text-foreground-500'}`}>
             <Icon icon="lucide:file-text" className="text-xl" />
             <span className="text-tiny">Referencias Emitidas</span>
+          </Link>
+
+          <Link to="/admin/referrals/received" className={`flex flex-col items-center p-2 ${isActive('/admin/referrals/received') ? 'text-primary' : 'text-foreground-500'}`}>
+            <Icon icon="lucide:inbox" className="text-xl" />
+            <span className="text-tiny">Recibidas</span>
           </Link>
         </div>
       </div>

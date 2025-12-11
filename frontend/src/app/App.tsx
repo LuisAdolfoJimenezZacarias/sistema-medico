@@ -129,6 +129,11 @@ export default function App() {
             <AdminLayout><GestionDocumentos /></AdminLayout>
           </ProtectedRoute>
         } />
+        <Route path="/admin/ReferenciasRecibidas" element={
+          <ProtectedRoute>
+            <AdminLayout><ReferenciasRecibidas /></AdminLayout>
+          </ProtectedRoute>
+        } />
 
         {/* Director */}
         <Route path="/director/dashboard" element={

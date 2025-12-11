@@ -1,9 +1,10 @@
 import express from 'express';
-import { createReferral, getAllReferrals, getReferralById, getReferralsByDoctor, getReferralsByPatient, updateReferralStatus, updateReferral } from '../controllers/referral.controller.js';
+import { createReferral, getAllReferrals, getReferralById, getReferralsByDoctor, getReferralsByPatient, updateReferralStatus, updateReferral, getApprovedReferralsForUnit, denyReferralByDirector } from '../controllers/referral.controller.js';
 import { verifyToken, isDirector } from '../middlewares/auth.middleware.js';
 import * as referralController from '../controllers/referral.controller.js';
 
 const router = express.Router();
+
 router.post('/', verifyToken, createReferral);
 router.get('/', verifyToken, getAllReferrals);
 router.get('/id/:id', verifyToken, getReferralById);
@@ -14,6 +15,11 @@ router.patch('/:id', verifyToken, updateReferral);
 router.patch('/:id/status', verifyToken, updateReferralStatus);
 // enviar al director
 router.post('/:id/send-to-director', verifyToken, referralController.sendReferralToDirector);
+router.post('/:id/approve', verifyToken, referralController.approveReferralByDirector);
+// nueva ruta para rechazar por director
+router.post('/:id/deny', verifyToken, denyReferralByDirector);
 // referencias pendientes para director
 router.get('/director/pending', verifyToken, isDirector, referralController.getReferralsForDirector);
+// NUEVA RUTA: referencias aprobadas de la unidad del usuario/director
+router.get('/unit/approved', verifyToken, getApprovedReferralsForUnit);
 export default router;

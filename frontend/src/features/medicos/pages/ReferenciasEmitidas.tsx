@@ -50,7 +50,9 @@ const mapReferral = (r: any): Referral & { rawId?: number | string; _raw?: any }
     if (!raw) return 'Pending';
     if (raw.includes('pend')) return 'Pending';
     if (raw.includes('envi')) return 'Pending'; // 'Enviada' -> tratar como pendiente/enviada al director
-    if (raw.includes('acept')) return 'Accepted';
+    // admitir variantes: "aprobada", "aceptada"
+    if (raw.includes('aprob')) return 'Aprobada';
+     if (raw.includes('acept')) return 'Accepted';
     if (raw.includes('comp')) return 'Completed';
     if (raw.includes('rech')) return 'Rejected';
     // fallback seguro: no asumir rechazo, marcar como pendiente u 'Unknown'

@@ -86,9 +86,10 @@ export const GestionDocumentos: React.FC = () => {
       if (unidadId) params.set('id_unidad_origen', unidadId);
       else params.set('unidad_origen', unidadName!);
 
-      // FILTRO: solo las referencias enviadas al director (ajusta la key según tu backend)
-      // Opción A: si backend filtra por estado
-      params.set('estado', 'Enviada');
+      // Aplicar filtro por estado SOLO si la pestaña lo requiere
+      if (selectedTab === 'pending') {
+        params.set('estado', 'Enviada');
+      }
       // Opción B (si tu API soporta flag): params.set('sent_to_director', '1');
 
       try {

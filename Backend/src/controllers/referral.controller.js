@@ -1,5 +1,5 @@
 import db from '../models/index.js';
-import { Op } from 'sequelize'; // <-- agregado
+import { Op } from 'sequelize';
 const { Referral, Medico, Paciente, Unidad, Especialidad, Director, sequelize } = db;
 
 /**
@@ -440,5 +440,222 @@ export const getReferralsForDirector = async (req, res) => {
   } catch (err) {
     console.error('getReferralsForDirector error:', err);
     return res.status(500).json({ message: err.message || 'Error al obtener referencias para director' });
+  }
+};
+
+/**
+ * Aprobar referencia por el director
+ * - Actualiza id_director_autoriza y estado = 'Aprobada'
+ */
+export const approveReferralByDirector = async (req, res) => {
+  try {
+    const { id } = req.params;
+    console.debug('[referral.controller] approveReferralByDirector idParam=', id);
+
+    const authUser = req.user ?? null;
+    if (!authUser) return res.status(401).json({ message: 'Unauthorized' });
+
+    // Buscar la referencia intentando varias estrategias para evitar mismatch de claves
+    let referral = await Referral.findByPk(id);
+
+    if (!referral) {
+      const n = Number(id);
+      if (!Number.isNaN(n)) referral = await Referral.findByPk(n);
+    }
+
+    if (!referral) {
+      referral = await Referral.findOne({
+        where: {
+          [Op.or]: [
+            { id_referencia: isNaN(Number(id)) ? null : Number(id) },
+            { folio: String(id) }
+          ].filter(Boolean)
+        }
+      });
+    }
+
+    if (!referral) {
+      console.warn('[referral.controller] approveReferralByDirector: not found for id=', id);
+      return res.status(404).json({ message: 'Referencia no encontrada' });
+    }
+
+    // determinar id_director_autoriza (igual que antes)
+    let directorId = req.body?.id_director_autoriza ?? null;
+    if (!directorId) {
+      const director = await Director.findOne({ where: { id_usuario: authUser.id } });
+      if (director) directorId = director.id_director;
+    }
+
+    // LOG antes de actualizar
+    console.debug('[referral.controller] before update', {
+      id_referencia: referral.id_referencia,
+      currentEstado: referral.estado,
+      directorId
+    });
+
+    // Actualizar usando la instancia
+    await referral.update({
+      estado: 'Aprobada',
+      id_director_autoriza: directorId ?? referral.id_director_autoriza
+    });
+
+    const updated = await Referral.findByPk(referral.id_referencia, {
+      include: [
+        { model: Paciente, as: 'paciente' },
+        { model: Unidad, as: 'unidad_destino' },
+        { model: Unidad, as: 'unidad_origen' },
+        // ...otros includes si los necesitas
+      ]
+    });
+
+    const plain = typeof updated.get === 'function' ? updated.get({ plain: true }) : updated;
+
+    // EMIT: notificar al FRONTEND
+    try {
+      const io = req.app?.get('io');
+      if (io) {
+        // emitir a la room de la unidad destino
+        const destUnit = plain?.id_unidad_destino ?? referral.id_unidad_destino;
+        if (destUnit) {
+          io.to(`unit_${destUnit}`).emit('referralReceived', plain);
+        }
+        // emisión general (opcional) para listeners globales
+        io.emit('referralUpdated', plain);
+      }
+    } catch (emitErr) {
+      console.error('[approveReferralByDirector] socket emit error', emitErr);
+    }
+
+    return res.status(200).json({ message: 'Referencia aprobada por director', referral: plain });
+  } catch (err) {
+    console.error('approveReferralByDirector error:', err);
+    return res.status(500).json({ message: 'Server error', error: err?.message ?? err });
+  }
+};
+
+/**
+ * Rechazar referencia por el director
+ * - Actualiza id_director_autoriza y estado = 'Rechazada'
+ */
+export const denyReferralByDirector = async (req, res) => {
+  try {
+    const { id } = req.params;
+    console.debug('[referral.controller] denyReferralByDirector idParam=', id);
+
+    const authUser = req.user ?? null;
+    if (!authUser) return res.status(401).json({ message: 'Unauthorized' });
+
+    // Buscar la referencia (misma estrategia que approve)
+    let referral = await Referral.findByPk(id);
+    if (!referral) {
+      const n = Number(id);
+      if (!Number.isNaN(n)) referral = await Referral.findByPk(n);
+    }
+
+    if (!referral) {
+      referral = await Referral.findOne({
+        where: {
+          [Op.or]: [
+            { id_referencia: isNaN(Number(id)) ? null : Number(id) },
+            { folio: String(id) }
+          ].filter(Boolean)
+        }
+      });
+    }
+
+    if (!referral) {
+      console.warn('[referral.controller] denyReferralByDirector: not found for id=', id);
+      return res.status(404).json({ message: 'Referencia no encontrada' });
+    }
+
+    // determinar id_director_autoriza
+    let directorId = req.body?.id_director_autoriza ?? null;
+    if (!directorId) {
+      const director = await Director.findOne({ where: { id_usuario: authUser.id } });
+      if (director) directorId = director.id_director;
+    }
+
+    console.debug('[referral.controller] before deny update', {
+      id_referencia: referral.id_referencia,
+      currentEstado: referral.estado,
+      directorId
+    });
+
+    try {
+      await referral.update({
+        estado: 'Rechazada',
+        id_director_autoriza: directorId ?? referral.id_director_autoriza
+      });
+    } catch (uerr) {
+      console.error('[referral.controller] deny update instance error', uerr);
+      return res.status(500).json({ message: 'Error al actualizar la referencia', error: uerr?.message ?? uerr });
+    }
+
+    const updated = await Referral.findByPk(referral.id_referencia);
+
+    console.debug('[referral.controller] after deny update', {
+      id_referencia: updated?.id_referencia,
+      newEstado: updated?.estado,
+      id_director_autoriza: updated?.id_director_autoriza
+    });
+
+    const plain = typeof updated.get === 'function' ? updated.get({ plain: true }) : updated;
+    return res.status(200).json({ message: 'Referencia rechazada por director', referral: plain });
+  } catch (err) {
+    console.error('denyReferralByDirector error:', err);
+    return res.status(500).json({ message: 'Server error', error: err?.message ?? err });
+  }
+};
+
+/**
+ * Obtener referencias aprobadas para la unidad del usuario autenticado
+ */
+export const getApprovedReferralsForUnit = async (req, res) => {
+  try {
+    const authUser = req.user ?? null;
+    console.debug('[getApprovedReferralsForUnit] req.user=', authUser, 'query=', req.query);
+    if (!authUser) return res.status(401).json({ message: 'Unauthorized' });
+
+    // permitir override via query para pruebas
+    const qUnidad = req.query?.id_unidad_origen ?? null;
+    let unidadId = qUnidad ? Number(qUnidad) : (authUser.id_unidad ?? null);
+
+    if (!unidadId) {
+      const director = await Director.findOne({ where: { id_usuario: authUser.id } });
+      if (director) unidadId = director.id_unidad;
+    }
+
+    if (!unidadId) return res.status(400).json({ message: 'No se pudo determinar la unidad del usuario' });
+
+    unidadId = Number(unidadId);
+
+    const where = {
+      id_unidad_origen: unidadId,
+      estado: 'Aprobada'
+    };
+
+    console.debug('[getApprovedReferralsForUnit] where=', where);
+
+    const referrals = await Referral.findAll({
+      where,
+      include: [
+        { model: Paciente, as: 'paciente', attributes: ['id_paciente','nombre','apellido_paterno','apellido_materno'] },
+        { model: Medico, as: 'medico_remitente', attributes: ['id_medico','nombre','apellido_paterno','apellido_materno'] },
+        { model: Especialidad, as: 'especialidad_ref', attributes: ['id_especialidad','nombre'], required: false },
+        { model: Unidad, as: 'unidad_origen', attributes: ['id_unidad','nombre','clues'], required: false },
+        { model: Unidad, as: 'unidad_destino', attributes: ['id_unidad','nombre','clues'], required: false },
+        { model: Director, as: 'director_autoriza', attributes: ['id_director','nombre','apellido_paterno','apellido_materno'], required: false }
+      ],
+      order: [['fecha_solicitud','DESC']]
+    });
+
+    console.debug('[getApprovedReferralsForUnit] found=', referrals.length);
+
+    const plain = referrals.map(r => (r && typeof r.get === 'function') ? r.get({ plain: true }) : r);
+    res.set('Cache-Control','no-store');
+    return res.status(200).json(plain);
+  } catch (err) {
+    console.error('getApprovedReferralsForUnit error:', err);
+    return res.status(500).json({ message: 'Server error', error: err?.message ?? err });
   }
 };

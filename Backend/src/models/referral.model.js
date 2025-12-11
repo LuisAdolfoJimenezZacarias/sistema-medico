@@ -131,7 +131,7 @@ const Referral = sequelize.define('Referral', {
   },
 
   estado: {
-    type: DataTypes.ENUM('Pendiente', 'Enviada', 'Aceptada', 'Rechazada', 'Contrarreferida'),
+    type: DataTypes.ENUM('Pendiente', 'Enviada','Aprobada', 'Aceptada', 'Rechazada', 'Contrarreferida'),
     allowNull: false,
     defaultValue: 'Pendiente',
     field: 'estado'

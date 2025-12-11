@@ -7,6 +7,9 @@ import { addToast } from '@heroui/react';
 import ReferralDetailModal from '../../medicos/components/ReferralDetailModal'; // <-- agregado
 import { useNavigate, useLocation } from 'react-router-dom'; // <-- ADD
 
+// <-- ADD: definir API_BASE como en otros módulos
+const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:5000/api';
+
 interface Authorization {
   id: string;
   type: 'Procedure' | 'Referral' | 'Equipment' | 'Medication' | 'Other';
@@ -54,10 +57,11 @@ export const DirectorAuthorizations: React.FC = () => {
       dateRequested: r.fecha_solicitud ? new Date(r.fecha_solicitud).toLocaleString() : '',
       status: (() => {
         const s = String(r.estado ?? '').toLowerCase();
+        // soportar variantes en español: "pendiente", "enviada", "aprobada", "aceptada", "rechazada", "completada", etc.
         if (s.includes('pend') || s.includes('envi')) return 'Pending';
-        if (s.includes('acept')) return 'Approved';
-        if (s.includes('rech')) return 'Denied';
-        if (s.includes('comp')) return 'Approved';
+        if (s.includes('aprob') || s.includes('acept') || s.includes('comp')) return 'Approved';
+        if (s.includes('rech') || s.includes('deneg')) return 'Denied';
+        if (s.includes('info') || s.includes('mas')) return 'More Info Needed';
         return 'Pending';
       })(),
       priority: (r.prioridad ? (String(r.prioridad).toLowerCase().includes('alta') ? 'High' : String(r.prioridad).toLowerCase().includes('baja') ? 'Low' : 'Medium') : 'Medium'),
@@ -70,36 +74,112 @@ export const DirectorAuthorizations: React.FC = () => {
 
   React.useEffect(() => {
     let mounted = true;
-    const fetchPending = async () => {
+    const controller = new AbortController();
+
+    const fetchForTab = async () => {
       setIsLoading(true);
       try {
         const token = localStorage.getItem('token');
         const headers: Record<string,string> = { Accept: 'application/json' };
         if (token) headers['Authorization'] = `Bearer ${token}`;
 
-        const url = `${import.meta.env.VITE_API_URL ?? 'http://localhost:5000/api'}/referrals/director/pending`;
-        const res = await fetch(url, { method: 'GET', headers });
-        if (!mounted) return;
-        if (!res.ok) {
-          const txt = await res.text().catch(()=> '');
-          console.warn('fetch director pending failed', res.status, txt.slice(0,200));
-          setAuthorizations([]);
+        const unidadId = user?.id_unidad ?? user?.unidadId ?? user?.unidad ?? user?.facilityId ?? null;
+
+        // pending -> ruta especializada
+        if (selectedTab === 'pending') {
+          const url = `${API_BASE}/referrals/director/pending`;
+          const res = await fetch(url, { method: 'GET', headers, signal: controller.signal });
+          if (!mounted) return;
+          if (!res.ok) { setAuthorizations([]); return; }
+          const data = await res.json().catch(() => []);
+          const rows = Array.isArray(data) ? data : (data.rows ?? data);
+          setAuthorizations(rows.map(mapToAuth));
           return;
         }
-        const data = await res.json().catch(() => []);
-        const rows = Array.isArray(data) ? data : (data.rows ?? data);
-        setAuthorizations(rows.map(mapToAuth));
+
+        // approved -> traer solo referencias aprobadas de la unidad del director
+        if (selectedTab === 'approved') {
+          const url = `${API_BASE}/referrals/unit/approved`;
+          const res = await fetch(url, { method: 'GET', headers, signal: controller.signal });
+          if (!mounted) return;
+          if (!res.ok) { setAuthorizations([]); return; }
+          const data = await res.json().catch(() => []);
+          const rows = Array.isArray(data) ? data : (data.rows ?? data);
+          console.debug('[Autorizaciones] fetched rows for approved:', rows.length, rows[0]);
+          setAuthorizations(rows.map(mapToAuth));
+          return;
+        }
+        
+        // mapping estado
+        const estadoMap: Record<string,string|null> = {
+          pending: 'Enviada',
+          approved: 'Aprobada',
+          denied: 'Rechazada',
+          info: null,
+          all: null
+        };
+        const estado = estadoMap[selectedTab] ?? null;
+
+        // Intentar traer desde backend filtrando por estado (si aplica)
+        const params = new URLSearchParams();
+        if (unidadId) params.set('id_unidad_origen', String(unidadId));
+        if (estado) params.set('estado', estado);
+
+        let url = `${API_BASE}/referrals${params.toString() ? `?${params.toString()}` : ''}`;
+        let res = await fetch(url, { method: 'GET', headers, signal: controller.signal });
+        if (!mounted) return;
+
+        let data = [];
+        if (res.ok) {
+          data = await res.json().catch(() => []);
+        } else {
+          // si falla el filtro por estado, no abortamos: intentamos recuperar sin filtro
+          console.warn('fetch with estado failed', res.status);
+        }
+
+        let rows = Array.isArray(data) ? data : (data.rows ?? data);
+
+        // FALLBACK: si no hay resultados y no pedimos "all" ni "pending", traer todo y filtrar en cliente
+        if ((rows?.length ?? 0) === 0 && selectedTab !== 'all' && selectedTab !== 'pending') {
+          const allParams = new URLSearchParams();
+          if (unidadId) allParams.set('id_unidad_origen', String(unidadId));
+          const allUrl = `${API_BASE}/referrals${allParams.toString() ? `?${allParams.toString()}` : ''}`;
+          const allRes = await fetch(allUrl, { method: 'GET', headers, signal: controller.signal });
+          if (allRes.ok) {
+            const allData = await allRes.json().catch(() => []);
+            rows = Array.isArray(allData) ? allData : (allData.rows ?? allData);
+          }
+          // filtrar localmente por texto en estado o por director_autoriza cuando corresponda
+          const needApproved = selectedTab === 'approved';
+          const needDenied = selectedTab === 'denied';
+          rows = (rows ?? []).filter((r: any) => {
+            const estadoText = String(r.estado ?? '').toLowerCase();
+            if (needApproved && (estadoText.includes('aprob') || (r.id_director_autoriza && !String(r.id_director_autoriza).trim().length === true))) return true;
+            if (needDenied && estadoText.includes('rech')) return true;
+            // si el campo estado está vacío pero hay id_director_autoriza lo consideramos aprobado
+            if (needApproved && (!estadoText || estadoText.trim() === '') && r.id_director_autoriza) return true;
+            return false;
+          });
+        }
+
+        setAuthorizations((rows ?? []).map(mapToAuth));
       } catch (err) {
-        console.error('fetchPending error', err);
-        setAuthorizations([]);
+        if ((err as any)?.name !== 'AbortError') {
+          console.error('fetchForTab error', err);
+          setAuthorizations([]);
+        }
       } finally {
         if (mounted) setIsLoading(false);
       }
     };
 
-    fetchPending();
-    return () => { mounted = false; };
-  }, [user]);
+    fetchForTab();
+
+    return () => {
+      mounted = false;
+      controller.abort();
+    };
+  }, [user, selectedTab]); // <-- refetch cuando cambie la pestaña o el usuario
   
   // Filter authorizations based on search term and tab
   const filteredAuthorizations = authorizations.filter(auth => {
@@ -128,40 +208,54 @@ export const DirectorAuthorizations: React.FC = () => {
     onOpen();
   };
   
-  const handleApprove = (id: string) => {
-    setAuthorizations(authorizations.map(auth => 
-      auth.id === id 
-        ? { ...auth, status: 'Approved' as const } 
-        : auth
-    ));
-    
-    if (selectedAuth?.id === id) {
-      setSelectedAuth({ ...selectedAuth, status: 'Approved' as const });
+  const handleApprove = async (id: string, auth?: Authorization) => {
+    const realId = auth?.rawId ?? (auth?.raw?.id_referencia ?? id);
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`${API_BASE}/referrals/${encodeURIComponent(realId)}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({}) // opcional: id_director_autoriza si lo tienes
+      });
+      if (!res.ok) {
+        const txt = await res.text().catch(()=> '');
+        console.error('approve failed', res.status, txt);
+        addToast({ title: 'Error', description: 'No se pudo aprobar la referencia', color: 'danger' });
+        return;
+      }
+      const data = await res.json().catch(() => null);
+      // actualizar UI localmente: marcar como Approved/Pending->Approved
+      setAuthorizations(prev => prev.map(a => (a.id === id ? ({ ...a, status: 'Approved' }) : a)));
+      addToast({ title: 'Aprobada', description: 'Referencia aprobada por el director', color: 'success' });
+    } catch (err) {
+      console.error('approve error', err);
+      addToast({ title: 'Error', description: 'No se pudo aprobar', color: 'danger' });
     }
-    
-    addToast({
-      title: "Authorization Approved",
-      description: `Authorization ${id} has been approved successfully`,
-      color: "success"
-    });
   };
   
-  const handleDeny = (id: string) => {
-    setAuthorizations(authorizations.map(auth => 
-      auth.id === id 
-        ? { ...auth, status: 'Denied' as const } 
-        : auth
-    ));
-    
-    if (selectedAuth?.id === id) {
-      setSelectedAuth({ ...selectedAuth, status: 'Denied' as const });
+  const handleDeny = async (id: string, auth?: Authorization) => {
+    const realId = auth?.rawId ?? (auth?.raw?.id_referencia ?? id);
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`${API_BASE}/referrals/${encodeURIComponent(realId)}/deny`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({}) // opcional: id_director_autoriza
+      });
+      if (!res.ok) {
+        const txt = await res.text().catch(()=> '');
+        console.error('deny failed', res.status, txt);
+        addToast({ title: 'Error', description: 'No se pudo rechazar la referencia', color: 'danger' });
+        return;
+      }
+      const data = await res.json().catch(() => null);
+      setAuthorizations(prev => prev.map(a => (a.id === id ? ({ ...a, status: 'Denied' }) : a)));
+      if (selectedAuth?.id === id) setSelectedAuth({ ...selectedAuth, status: 'Denied' });
+      addToast({ title: 'Rechazada', description: 'Referencia rechazada correctamente', color: 'danger' });
+    } catch (err) {
+      console.error('deny error', err);
+      addToast({ title: 'Error', description: 'No se pudo rechazar la referencia', color: 'danger' });
     }
-    
-    addToast({
-      title: "Authorization Denied",
-      description: `Authorization ${id} has been denied`,
-      color: "danger"
-    });
   };
   
   // abrir modal con la referencia completa (Request Info ahora muestra la referencia)
@@ -392,7 +486,7 @@ export const DirectorAuthorizations: React.FC = () => {
                                 <DropdownItem 
                                   key="approve" 
                                   description="Approve this authorization"
-                                  onPress={() => handleApprove(auth.id)}
+                                  onPress={() => handleApprove(auth.id, auth)}
                                 >
                                   <div className="flex items-center gap-2 text-success">
                                     <Icon icon="lucide:check" />
