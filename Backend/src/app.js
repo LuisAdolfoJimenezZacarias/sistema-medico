@@ -1,14 +1,12 @@
 // backend/src/app.js
 import express from 'express';
-import dotenv from 'dotenv';
 import cors from 'cors';
+import { createServer } from 'http';
+import { Server as IOServer } from 'socket.io';
 import helmet from 'helmet';
 import morgan from 'morgan';
 
 const app = express();
-
-// Cargar variables de entorno lo antes posible
-dotenv.config(); // ahora dotenv está definido
 
 // Middlewares para parseo de body
 app.use(express.json());
@@ -18,6 +16,7 @@ app.use(express.urlencoded({ extended: true }));
 import authRoutes from './routes/auth.routes.js';
 import userRoutes from './routes/user.routes.js';
 import patientRoutes from './routes/patient.routes.js';
+import directorRoutes from './routes/director.routes.js';
 import referralRoutes from './routes/referral.routes.js';
 import counterReferralRoutes from './routes/counter-referral.routes.js';
 import appointmentRoutes from './routes/appointment.routes.js';
@@ -40,6 +39,8 @@ app.use(morgan('dev'));
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/patients', patientRoutes);
+app.use('/api/directors', directorRoutes);
+app.use('/api/unidades', unidadesRoutes);
 app.use('/api/referrals', referralRoutes);
 app.use('/api/counter-referrals', counterReferralRoutes);
 app.use('/api/appointments', appointmentRoutes);
@@ -62,6 +63,31 @@ app.use((err, req, res, next) => {
     message: err.message,
     stack: process.env.NODE_ENV === 'production' ? '🥞' : err.stack
   });
+});
+
+// reemplazar app.listen(...) por httpServer con socket.io
+const httpServer = createServer(app);
+const io = new IOServer(httpServer, {
+  cors: { origin: '*' } // ajustar origenes en producción
+});
+
+// exponer io para usar en controladores
+app.set('io', io);
+
+io.on('connection', (socket) => {
+  console.debug('[io] client connected', socket.id);
+  // opcional: unir socket a rooms por unidad si cliente envía unidad en query:
+  socket.on('joinUnit', (unitId) => {
+    socket.join(`unit_${unitId}`);
+    console.debug(`[io] socket ${socket.id} joined unit_${unitId}`);
+  });
+  socket.on('disconnect', () => console.debug('[io] disconnect', socket.id));
+});
+
+// arrancar servidor HTTP
+const PORT = process.env.PORT || 5000;
+httpServer.listen(PORT, () => {
+  console.log(`Server listening on ${PORT}`);
 });
 
 export default app; // <-- ¡EXPORTA LA APP!

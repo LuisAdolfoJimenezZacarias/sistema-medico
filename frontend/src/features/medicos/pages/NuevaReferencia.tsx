@@ -1,7 +1,8 @@
 import React from "react";
-import { useNavigate } from "react-router-dom";
-import { Input, Button, addToast } from "@heroui/react";
+import { useNavigate, useLocation } from "react-router-dom";
+import { addToast } from "@heroui/react";
 import { useAuth } from '../../../context/auth-context';
+import ReferralForm from '../components/ReferralForm';
 
   // --- AutocompleteUnidad: nivel módulo (igual patrón que AutocompleteEspecialidad) ---
   const AutocompleteUnidad: React.FC<{
@@ -231,6 +232,7 @@ const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:5000/api';
 
 export default function NuevaReferencia(): JSX.Element {
   const navigate = useNavigate();
+  const location = useLocation();
   //esto seiia el evento de seleccion del formulario
   const [form, setForm] = React.useState<ReferenciaForm>({ 
     tipo_solicitud: undefined,
@@ -245,6 +247,8 @@ export default function NuevaReferencia(): JSX.Element {
 
   const [especialidades, setEspecialidades] = React.useState<any[]>([]);
   const [unidades, setUnidades] = React.useState<any[]>([]);
+  // id de la unidad donde está asignado el médico autenticado (para excluirla del listado destino)
+  const [assignedUnidadId, setAssignedUnidadId] = React.useState<number | null>(null);
   const [availableUnits, setAvailableUnits] = React.useState<number[] | null>(null); // null = no filtro
 
   const { user: currentUser } = useAuth() ?? {};
@@ -258,48 +262,115 @@ export default function NuevaReferencia(): JSX.Element {
 
     (async () => {
       try {
-        // 1) si currentUser ya trae nombre de unidad, usarlo
+        console.debug('[NuevaReferencia] autofill start currentUser:', currentUser);
+
+        // 1) usar valor directo si currentUser ya trae nombre de unidad
         const candidate = currentUser?.unidad_nombre ?? currentUser?.unidad ?? currentUser?.institution ?? currentUser?.organizacion;
         if (candidate) {
           handleInputChange('institucion', candidate);
-          return;
         }
 
         // 2) intentar obtener medico (por id_medico o por usuario)
-        let medico = null;
+        let medico: any = null;
+        const safeJson = async (res: Response) => {
+          try {
+            const j = await res.json();
+            // admitir respuesta envuelta { medico: ... } o la propia entidad
+            return j?.medico ?? j;
+          } catch (e) { return null; }
+        };
+
         if (medicoId) {
-          const r = await fetch(`${API_BASE}/medicos/${medicoId}`, { headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) } });
-          if (r.ok) medico = await r.json();
-        } else if (userId) {
-          const r = await fetch(`${API_BASE}/medicos/por_usuario/${userId}`, { headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) } });
-          if (r.ok) medico = await r.json();
+          try {
+            const res = await fetch(`${API_BASE}/medicos/${medicoId}`, { headers: { Accept: 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) } });
+            if (res.ok) medico = await safeJson(res);
+            else console.debug('[NuevaReferencia] medicos/:id ->', res.status);
+          } catch (e) { console.debug('fetch medicos by id error', e); }
         }
 
-        // 3) si conseguimos medico, obtener unidad por id_unidad
-        const unidadId = medico?.id_unidad ?? medico?.id_unidad_origen ?? null;
-        if (unidadId) {
-          // intentar endpoint específico de unidad
-          const ru = await fetch(`${API_BASE}/unidades/${unidadId}`, { headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) } });
-          if (ru.ok) {
-            const unidad = await ru.json();
-            handleInputChange('institucion', unidad?.nombre ?? unidad?.name ?? '');
+        if (!medico && userId) {
+          try {
+            const res = await fetch(`${API_BASE}/medicos/por_usuario/${userId}`, { headers: { Accept: 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) } });
+            if (res.ok) medico = await safeJson(res);
+            else console.debug('[NuevaReferencia] medicos/por_usuario ->', res.status);
+          } catch (e) { console.debug('fetch medicos por_usuario error', e); }
+        }
+
+        // 3) si conseguimos medico, autocompletar campos (nombre medico, id y unidad)
+        if (medico) {
+          console.debug('[NuevaReferencia] medico encontrado para autofill:', medico);
+          const fullName = [medico.nombre, medico.apellido_paterno, medico.apellido_materno].filter(Boolean).join(' ').trim();
+          if (fullName) handleInputChange('medico_solicitante', fullName);
+          const idMed = medico.id_medico ?? medico.id ?? null;
+          if (idMed) handleInputChange('id_medico_remitente', idMed);
+
+          // intentar resolver unidad desde el medico
+          const unidadId = medico.id_unidad ?? medico.idUnidad ?? medico.unidad_id ?? medical?.unidad?.id ?? null;
+          if (unidadId) {
+            setAssignedUnidadId(Number(unidadId));
+            const found = (unidades || []).find((u: any) => Number(u.id_unidad ?? u.id ?? -1) === Number(unidadId));
+            if (found) {
+              handleInputChange('institucion', found.nombre ?? found.name ?? '');
+              if (!form.id_unidad_origen) {
+                handleInputChange('unidad_origen_nombre', found.nombre ?? found.name ?? '');
+                handleInputChange('id_unidad_origen', found.id_unidad ?? found.id ?? null);
+              }
+            }
+          }
+
+          // intentar obtener director de la unidad del medico para autocompletar directivo_autoriza
+          const unidadForDirector = medico.id_unidad ?? medico.idUnidad ?? null;
+          if (unidadForDirector) {
+            try {
+              const r = await fetch(`${API_BASE}/directors/por_unidad/${unidadForDirector}`, { headers: { Accept: 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) } });
+              if (r.ok) {
+                const d = await r.json().catch(() => null);
+                const nombreDir = [d?.nombre, d?.apellido_paterno, d?.apellido_materno].filter(Boolean).join(' ').trim();
+                if (nombreDir) {
+                  handleInputChange('directivo_autoriza', nombreDir);
+                  handleInputChange('id_director_autoriza', d?.id_director ?? d?.id ?? null);
+                }
+              } else console.debug('[NuevaReferencia] directors/por_unidad ->', r.status);
+            } catch (err) { console.debug('Autofill director error', err); }
+          }
+          return;
+        }
+
+        // 4) fallback: si no hay medico, pero currentUser trae id_unidad, resolver nombre desde unidades cargadas
+        const fallbackUnidadId = currentUser?.id_unidad ?? currentUser?.unidad_id ?? null;
+        if (fallbackUnidadId) {
+          const found = (unidades || []).find((u: any) => Number(u.id_unidad ?? u.id ?? -1) === Number(fallbackUnidadId));
+          if (found) {
+            handleInputChange('institucion', found.nombre ?? found.name ?? '');
+            if (!form.id_unidad_origen) {
+              handleInputChange('unidad_origen_nombre', found.nombre ?? found.name ?? '');
+              handleInputChange('id_unidad_origen', found.id_unidad ?? found.id ?? null);
+            }
+            console.debug('[NuevaReferencia] autofill from currentUser.id_unidad ->', found);
             return;
           }
-          // fallback: usar lista ya cargada 'unidades'
-          const found = unidades.find((u: any) => (u.id_unidad ?? u.id) === Number(unidadId));
-          if (found) handleInputChange('institucion', found.nombre ?? found.name ?? '');
         }
+
+        console.debug('[NuevaReferencia] no se pudo autofill institucion (no medico/usuario unidad)');
+
       } catch (e) {
-        // noop
+        console.error('Autorellenar institucion/medico error', e);
       }
     })();
   }, [currentUser, unidades]); // eslint-disable-line react-hooks/exhaustive-deps
 
   React.useEffect(() => {
-    fetch(`${API_BASE}/especialidades`)
-      .then(r => r.ok ? r.json() : [])
-      .then(setEspecialidades)
-      .catch(() => setEspecialidades([]));
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/especialidades`);
+        const json = await res.json().catch(() => null);
+        console.log('[NuevaReferencia] fetch especialidades ->', res.status, Array.isArray(json) ? `count=${json.length}` : json);
+        setEspecialidades(Array.isArray(json) ? json : []);
+      } catch (err) {
+        console.error('[NuevaReferencia] fetch especialidades error', err);
+        setEspecialidades([]);
+      }
+    })();
   }, []);
 
   React.useEffect(() => {
@@ -334,12 +405,23 @@ export default function NuevaReferencia(): JSX.Element {
   
   // Lista de unidades a mostrar (filtrada por especialidad si availableUnits != null)
   const unidadesToShow = React.useMemo(() => {
-    if (availableUnits === null) return unidades;
-    return unidades.filter((u: any) => {
-      const id = u.id_unidad ?? u.id;
-      return id != null && availableUnits.includes(id);
+    const base = (unidades || []).slice();
+    // aplicar filtro por especialidad si corresponde
+    const byEspecialidad = availableUnits === null
+      ? base
+      : base.filter((u: any) => {
+          const id = u.id_unidad ?? u.id;
+          return id != null && availableUnits.includes(id);
+        });
+    // excluir la unidad asignada al médico autenticado y la unidad origen (si se definió)
+    const origenId = form.id_unidad_origen ?? form.id_unidad_solicitante ?? null;
+    return byEspecialidad.filter((u: any) => {
+      const id = Number(u.id_unidad ?? u.id ?? -1);
+      if (assignedUnidadId && id === Number(assignedUnidadId)) return false;
+      if (origenId && id === Number(origenId)) return false;
+      return true;
     });
-  }, [unidades, availableUnits]);
+  }, [unidades, availableUnits, form.id_unidad_origen, assignedUnidadId]);
   
   const fetchUnitsForEspecialidad = async (especialidadId?: number | null) => {
     if (!especialidadId) { setAvailableUnits(null); return; }
@@ -361,6 +443,18 @@ export default function NuevaReferencia(): JSX.Element {
     // log para depuración: ver qué clave cambia y con qué valor
     console.log('[form] set', key, value);
     setForm(prev => ({ ...prev, [key]: value }));
+  };
+
+  // handler para selección de especialidad desde el Autocomplete
+  const handleSelectEspecialidad = (s: any) => {
+    if (!s) return;
+    const id = s.id_especialidad ?? s.id ?? null;
+    const nombre = s.nombre ?? s.name ?? '';
+    // actualizar form mediante el handler que ya usas para mantener efectos/autorellenado
+    handleInputChange('id_especialidad_solicitada', id);
+    handleInputChange('servicio', nombre);
+    // si tienes lógica para cargar unidades por especialidad, puedes llamarla aquí:
+    // fetchUnitsForEspecialidad?.(Number(id));
   };
 
   // helper para buscar unidad por nombre (case-insensitive)
@@ -409,40 +503,117 @@ React.useEffect(() => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    // intentar resolver ids si faltan
+    // detectar modo edición si venimos desde ReferenciasEmitidas (location.state.edit + referral)
+    const st = (location && (location as any).state) || null;
+    const incoming = st?.referral ?? null;
+    const editId =
+      incoming?.id_referencia ??
+      incoming?.id ??
+      incoming?.rawId ?? // caso en que mapReferral pasó rawId
+      ((incoming && incoming._raw && (incoming._raw.id_referencia ?? incoming._raw.id)) || null);
+
+    // intentar resolver ids si faltan (misma lógica usada para creación)
     const idUnidadOrigen = form.id_unidad_origen ?? resolveUnidadIdByName(form.unidad_origen_nombre ?? form.institucion);
     const idUnidadDestino = form.id_unidad_destino ?? resolveUnidadIdByName(form.unidad_destino_nombre);
-
-    console.log('[NuevaReferencia] final ids before submit -> origen:', idUnidadOrigen, 'destino:', idUnidadDestino);
 
     if (!idUnidadOrigen) { addToast({ title: 'Error', description: 'Selecciona la unidad solicitante.', color: 'warning' }); return; }
     if (!idUnidadDestino) { addToast({ title: 'Error', description: 'Selecciona la unidad destino.', color: 'warning' }); return; }
     if (Number(idUnidadOrigen) === Number(idUnidadDestino)) { addToast({ title: 'Error', description: 'Origen y destino no pueden ser la misma unidad.', color: 'warning' }); return; }
 
+    const token = localStorage.getItem('token');
+
+    // Si estamos en modo edición y hay un id válido -> PATCH al endpoint de update (no altera la creación)
+    if (st?.edit && editId) {
+      try {
+        // construir payload de actualización (puede enviarse solo campos editables)
+        const updatePayload: any = {
+          id_paciente: form.id_paciente ?? null,
+          id_especialidad_solicitada: form.id_especialidad_solicitada ?? null,
+          id_unidad_origen: idUnidadOrigen,
+          id_unidad_destino: idUnidadDestino,
+          id_medico_remitente: form.id_medico_remitente ?? null,
+
+          no_folio: form.no_folio ?? null,
+          no_expediente: form.no_expediente ?? null,
+
+          tipo_solicitud: form.tipo_solicitud ?? null,
+          tipo_paciente: form.tipo_paciente ?? null,
+          prioridad: form.prioridad ?? "Media",
+
+          motivo_envio: form.motivo_envio ?? form.diagnostico_envio ?? null,
+          // <-- enviar procedimiento tomando el valor de form.procedimiento o, si está vacío, el texto de diagnostico_envio
+          procedimiento: form.procedimiento ?? form.diagnostico_envio ?? null,
+          // incluir también diagnostico_envio por compatibilidad con el backend
+          diagnostico_envio: form.diagnostico_envio ?? null,
+          servicio: form.servicio ?? null,
+          resumen_clinico: form.resumen_clinico ?? null,
+
+          peso: form.peso ?? null,
+          talla: form.talla ?? null,
+          fc: form.fc ?? null,
+          fr: form.fr ?? null,
+          temp: form.temp ?? null,
+          ta: form.ta ?? null,
+          spo2: form.spo2 ?? null,
+          dextrostix: form.dextrostix ?? null,
+
+          medico_solicitante: form.medico_solicitante ?? null,
+          directivo_autoriza: form.directivo_autoriza ?? null,
+          id_director_autoriza: form.id_director_autoriza ?? null,
+
+          nombre_paciente: form.nombre_paciente ?? null,
+          fecha_solicitud: form.fecha_solicitud ?? null,
+          fecha_nacimiento: form.fecha_nacimiento ?? null
+        };
+
+        console.log('[NuevaReferencia] updatePayload ->', editId, updatePayload);
+
+        const res = await fetch(`${API_BASE}/referrals/${encodeURIComponent(editId)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          body: JSON.stringify(updatePayload)
+        });
+
+        const json = await res.json().catch(() => null);
+        console.log('updateReferencia response:', res.status, json);
+
+        if (!res.ok) {
+          addToast({ title: 'Error', description: json?.message ?? `HTTP ${res.status}`, color: 'danger' });
+          return;
+        }
+
+        addToast({ title: 'Éxito', description: 'Referencia actualizada', color: 'success' });
+        // después de guardar en modo edición, redirigir o cerrar según UX (ejemplo: volver a lista)
+        navigate('/doctor/referrals');
+        return;
+      } catch (err) {
+        console.error('updateReferencia error', err);
+        addToast({ title: 'Error', description: 'No se pudo actualizar la referencia', color: 'danger' });
+        return;
+      }
+    }
+
+    // --- CREACIÓN: mantener exactamente la lógica existente para crear nueva referencia ---
     const payload = {
       id_paciente: form.id_paciente ?? null,
       id_especialidad_solicitada: form.id_especialidad_solicitada ?? null,
       id_unidad_origen: idUnidadOrigen,
       id_unidad_destino: idUnidadDestino,
       id_medico_remitente: form.id_medico_remitente ?? null,
-  
-      // folio / expediente
+
       no_folio: form.no_folio ?? null,
       folio: form.no_folio ?? null,
       no_expediente: form.no_expediente ?? null,
-  
-      // metadatos de la solicitud
+
       tipo_solicitud: form.tipo_solicitud ?? null,
       tipo_paciente: form.tipo_paciente ?? null,
       prioridad: form.prioridad ?? "Media",
-  
-      // motivos / procedimiento / servicio
+
       motivo_envio: form.motivo_envio ?? form.diagnostico_envio ?? null,
       procedimiento: form.procedimiento ?? null,
       servicio: form.servicio ?? null,
       resumen_clinico: form.resumen_clinico ?? null,
-  
-      // signos vitales
+
       peso: form.peso ?? null,
       talla: form.talla ?? null,
       fc: form.fc ?? null,
@@ -451,35 +622,37 @@ React.useEffect(() => {
       ta: form.ta ?? null,
       spo2: form.spo2 ?? null,
       dextrostix: form.dextrostix ?? null,
-  
-      // autorización / persona que autoriza
+
       medico_solicitante: form.medico_solicitante ?? null,
       directivo_autoriza: form.directivo_autoriza ?? null,
       id_director_autoriza: form.id_director_autoriza ?? null,
-  
-      // datos paciente visibles
+
       nombre_paciente: form.nombre_paciente ?? null,
       fecha_solicitud: form.fecha_solicitud ?? null,
-      fecha_nacimiento: form.fecha_nacimiento ?? null,
+      fecha_nacimiento: form.fecha_nacimiento ?? null
     };
-  
+
     console.log('Enviar createReferencia payload:', payload);
-    const token = localStorage.getItem('token');
-    const res = await fetch(`${API_BASE}/referrals`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      body: JSON.stringify(payload)
-    });
-  
-    const json = await res.json().catch(() => null);
-    console.log('createReferencia response:', res.status, json);
-    if (!res.ok) {
-      addToast({ title: 'Error', description: json?.message ?? `HTTP ${res.status}`, color: 'danger' });
-      return;
+    try {
+      const res = await fetch(`${API_BASE}/referrals`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify(payload)
+      });
+
+      const json = await res.json().catch(() => null);
+      console.log('createReferencia response:', res.status, json);
+      if (!res.ok) {
+        addToast({ title: 'Error', description: json?.message ?? `HTTP ${res.status}`, color: 'danger' });
+        return;
+      }
+
+      addToast({ title: 'Éxito', description: 'Referencia enviada', color: 'success' });
+      navigate('/doctor/referrals');
+    } catch (err) {
+      console.error('createReferencia error', err);
+      addToast({ title: 'Error', description: 'No se pudo crear la referencia', color: 'danger' });
     }
-  
-    addToast({ title: 'Éxito', description: 'Referencia enviada', color: 'success' });
-    // ...resto...
   };
 
   // timer para debounce de CURP
@@ -508,6 +681,12 @@ React.useEffect(() => {
     }, 700) as unknown as number;
   };
 
+  // Ejecutar lookup (debounced) cuando cambie el campo curp del formulario
+  React.useEffect(() => {
+    scheduleLookupCurp(form.curp);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.curp]);
+  
   React.useEffect(() => {
     return () => {
       if (curpTimer.current) window.clearTimeout(curpTimer.current);
@@ -618,593 +797,168 @@ React.useEffect(() => {
 
 
 
+  React.useEffect(() => {
+    try {
+      // Preferir location.state, fallback a sessionStorage (para casos donde hubo redirect al login)
+      const stRaw = (location && (location.state as any)) || null;
+      let st = stRaw;
+      if ((!st || !st.edit) && typeof window !== 'undefined') {
+        try {
+          const s = sessionStorage.getItem('editReferral');
+          if (s) {
+            st = { edit: true, referral: JSON.parse(s) };
+            // limpiar para no reutilizar accidentalmente
+            sessionStorage.removeItem('editReferral');
+          }
+        } catch (e) {
+          console.warn('[NuevaReferencia] sessionStorage parse error', e);
+        }
+      }
+      if (!st || !st.edit) return;
+      const r = st.referral ?? st;
+
+      const pick = (names: string[] | string, fallback = null) => {
+        const keys = Array.isArray(names) ? names : [names];
+        for (const k of keys) {
+          if (typeof r === 'object' && r != null && (k in r) && r[k] !== undefined) return r[k];
+        }
+        return fallback;
+      };
+
+      const pickNested = (paths: string[][], fallback = null) => {
+        for (const path of paths) {
+          let cur: any = r;
+          let ok = true;
+          for (const p of path) {
+            if (!cur || !(p in cur)) { ok = false; break; }
+            cur = cur[p];
+          }
+          if (ok && cur !== undefined) return cur;
+        }
+        return fallback;
+      };
+
+      const normalizeSexo = (raw: any) => {
+        if (!raw && raw !== 0) return undefined;
+        const s = String(raw).trim().toLowerCase();
+        if (!s) return undefined;
+        if (s === 'm' || s === 'masculino' || s === 'male' || s === 'hombre') return 'hombre';
+        if (s === 'f' || s === 'femenino' || s === 'female' || s === 'mujer') return 'mujer';
+        return undefined;
+      };
+
+      const mapped: any = {
+        // ids / meta
+        no_expediente: pick(['no_expediente', 'noExpediente', 'expediente', 'expediente_num', 'expediente_numero', 'record_number', 'expedienteId', 'expediente_id'], ''),
+        no_folio: pick(['folio', 'no_folio', 'noFolio'], ''),
+        fecha_solicitud: pick(['fecha_solicitud', 'fechaSolicitud', 'created_at', 'fecha'], '')?.toString() ?? '',
+
+        // solicitud
+        tipo_solicitud: pick(['tipo_solicitud', 'tipoSolicitud', 'tipo', 'request_type'], ''),
+        tipo_paciente: pick(['tipo_paciente', 'tipoPaciente', 'paciente_tipo', 'patient_type'], ''),
+
+        // paciente
+        id_paciente: pickNested([['id_paciente'], ['paciente','id_paciente'], ['paciente','id'], ['patient','id']], null),
+        nombre_paciente: pickNested([['nombre_paciente'], ['paciente','nombre'], ['patient','name'], ['paciente_ref','nombre']], ''),
+        app_paterno: pickNested([['app_paterno'], ['paciente','apellido_paterno'], ['paciente_ref','apellido_paterno']], ''),
+        app_materno: pickNested([['app_materno'], ['paciente','apellido_materno'], ['paciente_ref','apellido_materno']], ''),
+
+        domicilio: pickNested([['paciente','domicilio'], ['paciente_ref','domicilio'], ['domicilio'], ['patient','address'], ['paciente_ref','domicilio']], ''),
+        fecha_nacimiento: pickNested([['paciente','fecha_nacimiento'], ['paciente_ref','fecha_nacimiento'], ['paciente','fechaNacimiento'], ['paciente_ref','fechaNacimiento'], ['fecha_nacimiento'], ['fechaNacimiento'], ['patient','birth_date']], '') ?? '',
+        edad: pickNested([['paciente','edad'], ['paciente_ref','edad'], ['edad'], ['patient','age']], '') ?? '',
+        curp: pickNested([['paciente','curp'], ['paciente_ref','curp'], ['curp'], ['patient','curp']], '') ?? '',
+        sexo: normalizeSexo(
+          pickNested([['paciente','genero'], ['paciente_ref','genero'], ['paciente','sexo'], ['paciente_ref','sexo'], ['sexo'], ['genero'], ['patient','gender']], '') ?? pick(['sexo','genero'], '')
+        ) ?? undefined,
+        familiar_responsable: pickNested([['paciente','familiar_responsable'], ['paciente_ref','familiar_responsable'], ['familiar_responsable'], ['patient','guardian']], '') ?? '',
+        telefono: pickNested([['paciente','telefono'], ['paciente_ref','telefono'], ['telefono'], ['patient','phone']], '') ?? '',
+
+        // unidades / servicio
+        id_unidad_origen: pick(['id_unidad_origen','id_unidad_solicitante','unidad_origen_id'], null),
+        unidad_origen_nombre: pickNested([['unidad_origen','nombre'], ['unidad_origen_nombre'], ['institucion']], ''),
+        id_unidad_destino: pick(['id_unidad_destino','unidad_destino_id'], null),
+        unidad_destino_nombre: pickNested([['unidad_destino','nombre'], ['unidad_destino_nombre']], ''),
+
+        // especialidad / servicio
+        id_especialidad_solicitada: pick(['id_especialidad_solicitada','id_especialidad','especialidad_id'], null),
+        servicio: pickNested([['especialidad_ref','nombre'], ['especialidad','nombre'], ['servicio']], ''),
+
+        // motivos / resumen
+        motivo_envio: pick(['motivo_envio','motivo','reason'], ''),
+        diagnostico_envio: pick(['diagnostico_envio','procedimiento','procedure','procedimiento_envio','procedimientoEnvio'], '') ?? '',
+        resumen_clinico: pick(['resumen_clinico','resumen','diagnostico_envio'], ''),
+
+        // signos vitales
+        peso: pick('peso',''),
+        talla: pick('talla',''),
+        fc: pick('fc',''),
+        fr: pick('fr',''),
+        temp: pick('temp',''),
+        ta: pick('ta',''),
+        spo2: pick('spo2',''),
+        dextrostix: pick('dextrostix',''),
+
+        // medico / autorizacion
+        id_medico_remitente: pickNested([['id_medico_remitente'], ['medico_remitente','id_medico'], ['medico','id']], null),
+        medico_solicitante: ((): string => {
+          const m = pickNested([['medico_remitente'], ['medico'], ['medico_ref']], null) || pick(['medico_solicitante','medico'], '');
+          if (!m) return '';
+          if (typeof m === 'string') return m;
+          return [m.nombre, m.apellido_paterno, m.apellido_materno].filter(Boolean).join(' ').trim();
+        })(),
+
+        id_director_autoriza: pick(['id_director_autoriza','id_director','director_id'], null),
+        directivo_autoriza: ((): string => {
+          const d = pickNested([['director_autoriza'], ['director'], ['directivo']], null) || pick('directivo_autoriza','');
+          if (!d) return '';
+          if (typeof d === 'string') return d;
+          return [d.nombre, d.apellido_paterno, d.apellido_materno].filter(Boolean).join(' ').trim();
+        })(),
+
+        prioridad: pick(['prioridad','priority'], 'Media'),
+        _raw: r
+      };
+
+      console.log('[NuevaReferencia] cargando referencia para edición, mapped:', mapped);
+
+      // setear form sin sobrescribir campos manuales no mapeados
+      setForm(prev => ({ ...prev, ...mapped }));
+
+      // si la referencia incluye medico con unidad, fijar assignedUnidadId (ayuda a filtrar destinos)
+      const medUnidad = pickNested([['medico_remitente','id_unidad'], ['medico','id_unidad'], ['medico','idUnidad']], null);
+      if (medUnidad) setAssignedUnidadId(Number(medUnidad));
+
+      // resolver nombres de unidades si sólo vienen ids y ya cargaste unidades
+      const tryResolve = (id: any) => {
+        if (!id) return null;
+        const found = (unidades || []).find((u: any) => Number(u.id_unidad ?? u.id ?? -1) === Number(id));
+        return found ? (found.nombre ?? found.name ?? '') : null;
+      };
+      if (mapped.id_unidad_origen && !mapped.unidad_origen_nombre) {
+        const n = tryResolve(mapped.id_unidad_origen);
+        if (n) handleInputChange('unidad_origen_nombre', n);
+      }
+      if (mapped.id_unidad_destino && !mapped.unidad_destino_nombre) {
+        const n = tryResolve(mapped.id_unidad_destino);
+        if (n) handleInputChange('unidad_destino_nombre', n);
+      }
+    } catch (err) {
+      console.error('Error cargando referencia para edición', err);
+    }
+// eslint-disable-next-line react-hooks/exhaustive-deps
+}, [location, unidades]);
+
+  // --- RENDER ---
   return (
-    <div className="max-w-5xl mx-auto p-4 md:p-8">
-      {/* Header que querías antes de la sección 1 */}
-      <header className="mb-6">
-        <h1 className="text-3xl font-bold text-blue-700">Hoja de Referencia Médica</h1>
-        <hr className="mt-3 border-t-2 border-blue-200" />
-      </header>
-
-      <form onSubmit={handleSubmit} className="bg-white rounded-lg shadow-sm p-6">
-        {/* --- Sección 1: Información de la Solicitud --- */}
-        <fieldset className="border border-gray-300 p-4 rounded-lg">
-          <legend className="text-xl font-semibold text-gray-800 px-2">Información de la Solicitud</legend>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-4">
-            {/* Tipo de solicitud */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Tipo de solicitud</label>
-              <div className="radio-group">
-                <label className="radio-label">
-                  <input
-                    type="radio"
-                    name="tipo_solicitud"
-                    value="programada"
-                    checked={form.tipo_solicitud === "programada"}
-                    onChange={() => handleInputChange("tipo_solicitud", "programada")}
-                  />
-                  <div className="radio-custom-dot" />
-                  <span>Programada</span>
-                </label>
-
-                <label className="radio-label">
-                  <input
-                    type="radio"
-                    name="tipo_solicitud"
-                    value="urgente"
-                    checked={form.tipo_solicitud === "urgente"}
-                    onChange={() => handleInputChange("tipo_solicitud", "urgente")}
-                  />
-                  <div className="radio-custom-dot" />
-                  <span>URGENTE</span>
-                </label>
-              </div>
-            </div>
-
-            {/* Tipo de paciente */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Tipo de paciente</label>
-              <div className="radio-group">
-                <label className="radio-label">
-                  <input
-                    type="radio"
-                    name="tipo_paciente"
-                    value="trabajador"
-                    checked={form.tipo_paciente === "trabajador"}
-                    onChange={() => handleInputChange("tipo_paciente", "trabajador")}
-                  />
-                  <div className="radio-custom-dot" />
-                  <span>Trabajador</span>
-                </label>
-
-                <label className="radio-label">
-                  <input
-                    type="radio"
-                    name="tipo_paciente"
-                    value="beneficiario"
-                    checked={form.tipo_paciente === "beneficiario"}
-                    onChange={() => handleInputChange("tipo_paciente", "beneficiario")}
-                  />
-                  <div className="radio-custom-dot" />
-                  <span>Beneficiario</span>
-                </label>
-              </div>
-            </div>
-
-            {/* No. Expediente */}
-            <div>
-              <label htmlFor="no_expediente" className="block text-sm font-medium text-gray-700">No. Expediente</label>
-              <input
-                id="no_expediente"
-                type="text"
-                value={form.no_expediente ?? ""}
-                onChange={(e) => handleInputChange("no_expediente", e.target.value)}
-                className="mt-1 w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
-
-            {/* No. de solicitud y/o folio */}
-            <div>
-              <label htmlFor="no_folio" className="block text-sm font-medium text-gray-700">No. de solicitud y/o folio</label>
-              <input
-                id="no_folio"
-                type="text"
-                value={form.no_folio ?? ""}
-                onChange={(e) => handleInputChange("no_folio", e.target.value)}
-                className="mt-1 w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
-
-            {/* Fecha de solicitud (fila completa) */}
-            <div className="md:col-span-2">
-              <label htmlFor="fecha_solicitud" className="block text-sm font-medium text-gray-700">Fecha de solicitud</label>
-              <input
-                id="fecha_solicitud"
-                type="date"
-                value={form.fecha_solicitud ?? ""}
-                onChange={(e) => handleInputChange("fecha_solicitud", e.target.value)}
-                className="mt-1 w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-                placeholder="dd/mm/aaaa"
-              />
-            </div>
-          </div>
-        </fieldset>
-
-        {/* Puedes añadir aquí más secciones o botones si los necesitas */}
-        {/* --- Sección 2: Identificación del Paciente (REEMPLAZADO) --- */}
-        <fieldset className="border border-gray-300 p-4 rounded-lg mt-6">
-          <legend className="text-xl font-semibold text-gray-800 px-2">Identificación del Paciente</legend>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-4">
-            {/* Apellido Paterno */}
-            <div>
-              <label htmlFor="app_paterno" className="block text-sm font-medium text-gray-700">Apellido Paterno</label>
-              <input
-                id="app_paterno"
-                type="text"
-                value={form.app_paterno ?? ""}
-                onChange={(e) => handleInputChange("app_paterno", e.target.value)}
-                className="mt-1 w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
-
-            {/* Apellido Materno */}
-            <div>
-              <label htmlFor="app_materno" className="block text-sm font-medium text-gray-700">Apellido Materno</label>
-              <input
-                id="app_materno"
-                type="text"
-                value={form.app_materno ?? ""}
-                onChange={(e) => handleInputChange("app_materno", e.target.value)}
-                className="mt-1 w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
-
-            {/* Nombre(s) */}
-            <div>
-              <label htmlFor="nombre_paciente" className="block text-sm font-medium text-gray-700">Nombre(s)</label>
-              <input
-                id="nombre_paciente"
-                type="text"
-                value={form.nombre_paciente ?? ""}
-                onChange={(e) => handleInputChange("nombre_paciente", e.target.value)}
-                className="mt-1 w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
-
-            {/* Domicilio (full width) */}
-            <div className="md:col-span-3">
-              <label htmlFor="domicilio" className="block text-sm font-medium text-gray-700">Domicilio</label>
-              <input
-                id="domicilio"
-                type="text"
-                value={form.domicilio ?? ""}
-                onChange={(e) => handleInputChange("domicilio", e.target.value)}
-                className="mt-1 w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
-
-            {/* Fecha de nacimiento */}
-            <div>
-              <label htmlFor="fecha_nacimiento" className="block text-sm font-medium text-gray-700">Fecha de nacimiento</label>
-              <input
-                id="fecha_nacimiento"
-                type="date"
-                value={form.fecha_nacimiento ?? ""}
-                onChange={(e) => {
-                  handleInputChange('fecha_nacimiento', e.target.value);
-                  // recalcular edad localmente y mostrar años/meses/días
-                  if (e.target.value) {
-                    handleInputChange('edad', formatAgeFromDate(e.target.value));
-                  } else {
-                    handleInputChange('edad', '');
-                  }
-                }}
-                className="mt-1 w-full p-2 border border-gray-300 rounded-md"
-              />
-            </div>
-
-            {/* Edad (solo lectura) */}
-            <div>
-              <label htmlFor="edad" className="block text-sm font-medium text-gray-700">Edad</label>
-              <input
-                id="edad"
-                type="text"
-                value={form.edad ?? ""}
-                readOnly
-                className="mt-1 w-full p-2 border border-gray-200 rounded-md bg-gray-50"
-              />
-            </div>
-
-            {/* Sexo */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Sexo</label>
-              <div className="radio-group">
-                <label className="radio-label">
-                  <input
-                    type="radio"
-                    name="sexo"
-                    value="mujer"
-                    checked={form.sexo === "mujer"}
-                    onChange={() => handleInputChange("sexo", "mujer")}
-                    disabled={sexLocked}
-                  />
-                  <div className="radio-custom-dot" />
-                  <span>Mujer</span>
-                </label>
-
-                <label className="radio-label">
-                  <input
-                    type="radio"
-                    name="sexo"
-                    value="hombre"
-                    checked={form.sexo === "hombre"}
-                    onChange={() => handleInputChange("sexo", "hombre")}
-                    disabled={sexLocked}
-                  />
-                  <div className="radio-custom-dot" />
-                  <span>Hombre</span>
-                </label>
-              </div>
-            </div>
-
-            {/* CURP */}
-            <div>
-              <label htmlFor="curp" className="block text-sm font-medium text-gray-700">C.U.R.P.</label>
-              <input
-                id="curp"
-                type="text"
-                maxLength={18}
-                value={form.curp ?? ""}
-                onChange={(e) => {
-                  handleInputChange("curp", e.target.value);
-                  scheduleLookupCurp(e.target.value);
-                }}
-                // quitar onBlur
-                className="mt-1 w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
-
-            {/* Familiar responsable */}
-            <div className="md:col-span-2">
-              <label htmlFor="familiar_responsable" className="block text-sm font-medium text-gray-700">Familiar responsable</label>
-              <input
-                id="familiar_responsable"
-                type="text"
-                value={form.familiar_responsable ?? ""}
-                onChange={(e) => handleInputChange("familiar_responsable", e.target.value)}
-                className="mt-1 w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
-
-            {/* Número telefónico */}
-            <div>
-              <label htmlFor="telefono" className="block text-sm font-medium text-gray-700">Número telefónico</label>
-              <input
-                id="telefono"
-                type="tel"
-                value={form.telefono ?? ""}
-                onChange={(e) => handleInputChange("telefono", e.target.value)}
-                className="mt-1 w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
-
-            {/* Discapacidad (full width) */}
-            <div className="md:col-span-3">
-              <label htmlFor="discapacidad" className="block text-sm font-medium text-gray-700">Discapacidad (descripción)</label>
-              <input
-                id="discapacidad"
-                type="text"
-                placeholder="Ej. Motriz, visual, auditiva, etc."
-                value={form.discapacidad ?? ""}
-                onChange={(e) => handleInputChange("discapacidad", e.target.value)}
-                className="mt-1 w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
-          </div>
-        </fieldset>
-        {/* --- Sección: Información de la Unidad Solicitante (AÑADIR) --- */}
-        <fieldset className="border border-gray-300 p-4 rounded-lg mt-6">
-          <legend className="text-xl font-semibold text-gray-800 px-2">Información de la Unidad Solicitante</legend>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-4">
-            {/* Institución solicitante */}
-            <div>
-              <label htmlFor="institucion" className="block text-sm font-medium text-gray-700">Institución solicitante</label>
-              <input
-                id="institucion"
-                type="text"
-                value={form.institucion ?? ""}
-                onChange={(e) => handleInputChange("institucion", e.target.value)}
-                className="mt-1 w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
-
-            {/* Unidad médica que solicita (TRATADA como UNIDAD DESTINO) */}
-            <div>
-              <label htmlFor="unidad_medica" className="block text-sm font-medium text-gray-700">Unidad médica que solicita</label>
-
-              <AutocompleteUnidad
-                unidades={unidadesToShow}
-                value={form.unidad_destino_nombre ?? ""}
-                onChange={(v) => {
-                  // escribir en el campo visible de destino y limpiar id hasta selección
-                  handleInputChange('unidad_destino_nombre', v);
-                  handleInputChange('id_unidad_destino', null);
-                }}
-                onSelect={(u) => {
-                  // cuando el usuario selecciona aquí, eso corresponde a la unidad DESTINO
-                  const id = u?.id_unidad ?? u?.id ?? null;
-                  handleInputChange('unidad_destino_nombre', u?.nombre ?? u?.name ?? '');
-                  handleInputChange('id_unidad_destino', id);
-                  console.log('[NuevaReferencia] onSelectUnidadDestino (desde campo "Unidad médica que solicita") ->', id, u);
-                }}
-              />
-
-              <input
-                type="hidden"
-                onBlur={() => {
-                  // fallback: resolver id_unidad_destino por nombre si el usuario escribió y salió del campo
-                  if (form.id_unidad_destino) return;
-                  const id = resolveUnidadIdByName(form.unidad_destino_nombre);
-                  if (id) {
-                    handleInputChange('id_unidad_destino', id);
-                    console.log('[NuevaReferencia] resolved id_unidad_destino onBlur ->', id);
-                  }
-                }}
-              />
-            </div>
-
-            {/* Prioridad */}
-            <div>
-             <label htmlFor="form-prioridad" className="block text-sm font-medium text-gray-700">Prioridad</label>
-              <select
-                id="form-prioridad"
-                value={form.prioridad ?? "Media"}
-                onChange={(e) => {
-                  const v = e.target.value as "Alta" | "Media" | "Baja";
-                  console.log('[form] prioridad onChange ->', v);
-                  handleInputChange("prioridad", v);
-                }}
-                className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500"
-              >
-                <option value="Alta">Alta</option>
-                <option value="Media">Media</option>
-                <option value="Baja">Baja</option>
-              </select>
-            </div>
-
-            {/* Servicio que solicita */}
-            <div className="md:col-span-2">
-              <label htmlFor="servicio" className="block text-sm font-medium text-gray-700">Servicio que solicita</label>
-              <AutocompleteEspecialidad
-                especialidades={especialidades}
-                value={form.servicio ?? ""}
-                onChange={(v) => {
-                  handleInputChange("servicio", v);
-                  handleInputChange("id_especialidad_solicitada", null);
-                }}
-                onSelect={(s) => {
-                  const id = s.id_especialidad ?? s.id;
-                  handleInputChange("servicio", s.nombre ?? s.name);
-                  handleInputChange("id_especialidad_solicitada", id ?? null);
-                  fetchUnitsForEspecialidad(id ?? null);
-                }}
-              />
-            </div>
-
-            {/* Diagnóstico(s) de envío */}
-            <div className="md:col-span-2">
-              <label htmlFor="diagnostico_envio" className="block text-sm font-medium text-gray-700">Diagnóstico(s) de envío</label>
-              <textarea
-                id="diagnostico_envio"
-                value={form.diagnostico_envio ?? ""}
-                onChange={(e) => handleInputChange("diagnostico_envio", e.target.value)}
-                rows={4}
-                placeholder="(Catálogo de intervenciones)"
-                className="mt-1 w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
-
-            {/* Motivo de envío */}
-            <div className="md:col-span-2 mt-2">
-              <label htmlFor="motivo_envio" className="block text-sm font-medium text-gray-700">Motivo de envío</label>
-              <textarea
-                id="motivo_envio"
-                value={form.motivo_envio ?? ""}
-                onChange={(e) => handleInputChange("motivo_envio", e.target.value)}
-                rows={3}
-                placeholder="Descripción del motivo de la referencia"
-                className="mt-1 w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
-          </div>
-        </fieldset>
-                
-        {/* --- Sección: Resumen Clínico y Signos Vitales (AÑADIR) --- */}
-        <fieldset className="border border-gray-300 p-4 rounded-lg mt-6">
-          <legend className="text-xl font-semibold text-gray-800 px-2">Resumen Clínico</legend>
-
-          <div className="mt-4">
-            <label htmlFor="resumen_clinico" className="block text-sm font-medium text-gray-700">Resumen Clínico</label>
-            <textarea
-              id="resumen_clinico"
-              value={form.resumen_clinico ?? ""}
-              onChange={(e) => handleInputChange("resumen_clinico", e.target.value)}
-              placeholder="Principales datos del interrogatorio, exploración física, auxiliares de diagnóstico, tratamiento, terapéutica previa..."
-              rows={6}
-              className="mt-1 w-full p-3 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-            />
-          </div>
-
-          <h3 className="text-md font-semibold text-gray-700 mt-6 mb-3">Signos Vitales</h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
-            <div>
-              <label htmlFor="peso" className="block text-xs font-medium text-gray-600">PESO (kg)</label>
-              <input
-                id="peso"
-                type="number"
-                step="0.1"
-                value={form.peso ?? ""}
-                onChange={(e) => handleInputChange("peso", e.target.value)}
-                className="mt-1 w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-                placeholder="0.0"
-              />
-            </div>
-
-            <div>
-              <label htmlFor="talla" className="block text-xs font-medium text-gray-600">TALLA (cm)</label>
-              <input
-                id="talla"
-                type="number"
-                step="1"
-                value={form.talla ?? ""}
-                onChange={(e) => handleInputChange("talla", e.target.value)}
-                className="mt-1 w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-                placeholder="0"
-              />
-            </div>
-
-            <div>
-              <label htmlFor="fc" className="block text-xs font-medium text-gray-600">FC (lpm)</label>
-              <input
-                id="fc"
-                type="number"
-                value={form.fc ?? ""}
-                onChange={(e) => handleInputChange("fc", e.target.value)}
-                className="mt-1 w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-                placeholder="0"
-              />
-            </div>
-
-            <div>
-              <label htmlFor="fr" className="block text-xs font-medium text-gray-600">FR (rpm)</label>
-              <input
-                id="fr"
-                type="number"
-                value={form.fr ?? ""}
-                onChange={(e) => handleInputChange("fr", e.target.value)}
-                className="mt-1 w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-                placeholder="0"
-              />
-            </div>
-
-            <div>
-              <label htmlFor="temp" className="block text-xs font-medium text-gray-600">TEMP (°C)</label>
-              <input
-                id="temp"
-                type="number"
-                step="0.1"
-                value={form.temp ?? ""}
-                onChange={(e) => handleInputChange("temp", e.target.value)}
-                className="mt-1 w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-                placeholder="0.0"
-              />
-            </div>
-
-            <div>
-              <label htmlFor="ta" className="block text-xs font-medium text-gray-600">T/A (mmHg)</label>
-              <input
-                id="ta"
-                type="text"
-                value={form.ta ?? ""}
-                onChange={(e) => handleInputChange("ta", e.target.value)}
-                className="mt-1 w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-                placeholder="120/80"
-              />
-            </div>
-
-            <div>
-              <label htmlFor="spo2" className="block text-xs font-medium text-gray-600">SPO2 (%)</label>
-              <input
-                id="spo2"
-                type="number"
-                value={form.spo2 ?? ""}
-                onChange={(e) => handleInputChange("spo2", e.target.value)}
-                className="mt-1 w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-                placeholder="0"
-              />
-            </div>
-
-            <div>
-              <label htmlFor="dextrostix" className="block text-xs font-medium text-gray-600">DEXTROSTIX</label>
-              <input
-                id="dextrostix"
-                type="number"
-                value={form.dextrostix ?? ""}
-                onChange={(e) => handleInputChange("dextrostix", e.target.value)}
-                className="mt-1 w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-                placeholder="0"
-              />
-            </div>
-          </div>
-        </fieldset>
-          
-
-        {/* --- Sección: Procedimiento o Estudio Solicitado (AÑADIDO) --- */}
-        <fieldset className="border border-gray-300 p-4 rounded-lg mt-6">
-          <legend className="text-xl font-semibold text-gray-800 px-2">Procedimiento o Estudio Solicitado</legend>
-
-          <div className="mt-4">
-            <label htmlFor="procedimiento" className="block text-sm font-medium text-gray-700">Procedimiento o estudio solicitado</label>
-            <textarea
-              id="procedimiento"
-              value={form.procedimiento ?? ""}
-              onChange={(e) => handleInputChange("procedimiento", e.target.value)}
-              rows={4}
-              placeholder="(Catálogo de intervenciones u otros acordados en el convenio específico)"
-              className="mt-1 w-full p-3 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-            />
-          </div>
-        </fieldset>
-                {/* --- Sección: Autorización --- */}
-        <fieldset className="border border-gray-300 p-4 rounded-lg mt-6">
-          <legend className="text-xl font-semibold text-gray-800 px-2">Autorización</legend>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-4">
-            <div>
-              <label htmlFor="medico_solicitante" className="block text-sm font-medium text-gray-700">Nombre y clave del médico solicitante</label>
-              <input
-                id="medico_solicitante"
-                type="text"
-                value={form.medico_solicitante ?? ""}
-                onChange={(e) => handleInputChange("medico_solicitante", e.target.value)}
-                className="mt-1 w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
-
-            <div>
-              <label htmlFor="directivo_autoriza" className="block text-sm font-medium text-gray-700">Nombre y clave del directivo que autoriza</label>
-              <input
-                id="directivo_autoriza"
-                type="text"
-                value={form.directivo_autoriza ?? ""}
-                onChange={(e) => handleInputChange("directivo_autoriza", e.target.value)}
-                className="mt-1 w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-              />
-            </div>
-          </div>
-        </fieldset>
-
-        {/* Botones: Salir y Guardar */}
-        <div className="flex items-center justify-end gap-4 mt-6">
-          <button
-            type="button"
-            onClick={() => navigate("/doctor/referrals")}
-            className="px-5 py-3 bg-gray-200 rounded-md hover:bg-gray-300"
-          >
-            Salir
-          </button>
-
-          <button
-            type="submit"
-            className="px-6 py-3 bg-blue-600 text-white rounded-md shadow-md hover:bg-blue-700"
-          >
-            Guardar y Enviar Referencia
-          </button>
-        </div>
-      </form>
-    </div>
+    <ReferralForm
+      formData={form}
+      onChange={(k,v) => handleInputChange(k as any, v)}
+      onSubmit={handleSubmit}
+      unidades={unidadesToShow}                    // usar lista filtrada (excluye según especialidad)
+      especialidades={especialidades}
+      readOnly={false}
+      onSelectUnidadOrigen={onSelectUnidadOrigen}  // pasar handlers para setear ids/nombres
+      onSelectUnidadDestino={onSelectUnidadDestino}
+    />
   );
 }

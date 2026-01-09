@@ -4,6 +4,11 @@ import { Icon } from '@iconify/react';
 import { motion } from 'framer-motion';
 import { useAuth } from '../../../context/auth-context';
 import { addToast } from '@heroui/react';
+import ReferralDetailModal from '../../medicos/components/ReferralDetailModal'; // <-- agregado
+import { useNavigate, useLocation } from 'react-router-dom'; // <-- ADD
+
+// <-- ADD: definir API_BASE como en otros módulos
+const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:5000/api';
 
 interface Authorization {
   id: string;
@@ -17,38 +22,164 @@ interface Authorization {
   status: 'Pending' | 'Approved' | 'Denied' | 'More Info Needed';
   priority: 'Urgent' | 'High' | 'Medium' | 'Low';
   cost?: string;
+  serviceRequested?: string; // <- agregado
+  raw?: any;       // <-- referencia original (backend)
+  rawId?: string | number;
 }
 
 export const DirectorAuthorizations: React.FC = () => {
   const { isOpen, onOpen, onOpenChange } = useDisclosure();
+  const [detailOpen, setDetailOpen] = React.useState(false);
+  const [detailId, setDetailId] = React.useState<string | null>(null);
   const [authorizations, setAuthorizations] = React.useState<Authorization[]>([]);
   const [searchTerm, setSearchTerm] = React.useState('');
   const [page, setPage] = React.useState(1);
   const [isLoading, setIsLoading] = React.useState(true);
   const [selectedTab, setSelectedTab] = React.useState('pending');
   const [selectedAuth, setSelectedAuth] = React.useState<Authorization | null>(null);
-  
+
   const { user } = useAuth();
-  
-  // Mock authorization data
+
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  // mapeo simple de referencia -> Authorization
+  const mapToAuth = (r: any): Authorization => {
+    const patientName = r.paciente ? `${r.paciente.nombre} ${r.paciente.apellido_paterno ?? ''} ${r.paciente.apellido_materno ?? ''}`.trim() : (r.nombre_paciente ?? '');
+    return {
+      id: String(r.folio ?? r.id_referencia ?? r.id ?? ''),
+      type: 'Referral',
+      requestedBy: r.medico_remitente ? `${r.medico_remitente.nombre} ${r.medico_remitente.apellido_paterno ?? ''}`.trim() : (r.medico_solicitante ?? 'Medico'),
+      department: r.unidad_origen?.nombre ?? r.unidad_origen_nombre ?? '',
+      patient: patientName || undefined,
+      description: r.motivo_envio ?? r.resumen_clinico ?? '',
+      justification: r.resumen_clinico ?? '',
+      dateRequested: r.fecha_solicitud ? new Date(r.fecha_solicitud).toLocaleString() : '',
+      status: (() => {
+        const s = String(r.estado ?? '').toLowerCase();
+        // soportar variantes en español: "pendiente", "enviada", "aprobada", "aceptada", "rechazada", "completada", etc.
+        if (s.includes('pend') || s.includes('envi')) return 'Pending';
+        if (s.includes('aprob') || s.includes('acept') || s.includes('comp')) return 'Approved';
+        if (s.includes('rech') || s.includes('deneg')) return 'Denied';
+        if (s.includes('info') || s.includes('mas')) return 'More Info Needed';
+        return 'Pending';
+      })(),
+      priority: (r.prioridad ? (String(r.prioridad).toLowerCase().includes('alta') ? 'High' : String(r.prioridad).toLowerCase().includes('baja') ? 'Low' : 'Medium') : 'Medium'),
+      cost: r.costo ?? undefined,
+      serviceRequested: r.especialidad_ref?.nombre ?? r.especialidad?.nombre ?? (typeof r.procedimiento === 'string' ? r.procedimiento : ''),
+      raw: r,                    // guardar objeto original
+      rawId: r.id_referencia ?? r.id ?? null
+    };
+  };
+
   React.useEffect(() => {
-    // Simulate API call
-    setTimeout(() => {
-      const mockAuthorizations: Authorization[] = [
-        { id: 'AUTH-2023-001', type: 'Procedure', requestedBy: 'Dr. Michael Chen', department: 'Neurology', patient: 'Maria Garcia', description: 'MRI Brain with contrast', justification: 'Suspected multiple sclerosis, previous CT inconclusive', dateRequested: '2023-09-15', status: 'Pending', priority: 'Urgent', cost: '$1,200' },
-        { id: 'AUTH-2023-002', type: 'Referral', requestedBy: 'Dr. Sarah Lee', department: 'Dermatology', patient: 'John Smith', description: 'External referral to University Hospital Dermatology', justification: 'Rare skin condition requiring specialized treatment', dateRequested: '2023-09-14', status: 'Pending', priority: 'Medium' },
-        { id: 'AUTH-2023-003', type: 'Equipment', requestedBy: 'Dr. James Wilson', department: 'Orthopedics', description: 'Portable ultrasound machine', justification: 'Will improve efficiency in joint injections and reduce patient wait times', dateRequested: '2023-09-12', status: 'Pending', priority: 'Medium', cost: '$8,500' },
-        { id: 'AUTH-2023-004', type: 'Medication', requestedBy: 'Dr. Emily Rodriguez', department: 'Endocrinology', patient: 'Robert Johnson', description: 'Non-formulary medication: Semaglutide', justification: 'Patient failed standard treatments, meets criteria for this medication', dateRequested: '2023-09-10', status: 'Approved', priority: 'High', cost: '$850/month' },
-        { id: 'AUTH-2023-005', type: 'Procedure', requestedBy: 'Dr. Robert Kim', department: 'Pulmonology', patient: 'David Miller', description: 'Bronchoscopy with biopsy', justification: 'Abnormal chest CT, suspected malignancy', dateRequested: '2023-09-08', status: 'Approved', priority: 'Urgent' },
-        { id: 'AUTH-2023-006', type: 'Other', requestedBy: 'Dr. Lisa Chen', department: 'Cardiology', description: 'Additional clinic hours', justification: 'Current wait time for new patients exceeds 6 weeks', dateRequested: '2023-09-05', status: 'Denied', priority: 'Medium' },
-        { id: 'AUTH-2023-007', type: 'Referral', requestedBy: 'Dr. Thomas Johnson', department: 'Gastroenterology', patient: 'Jennifer Davis', description: 'Referral to Mayo Clinic', justification: 'Complex case requiring tertiary care center expertise', dateRequested: '2023-09-03', status: 'More Info Needed', priority: 'High' },
-        { id: 'AUTH-2023-008', type: 'Equipment', requestedBy: 'Dr. Michael Chen', department: 'Neurology', description: 'EEG monitoring equipment', justification: 'Current equipment outdated, frequent malfunctions', dateRequested: '2023-09-01', status: 'Pending', priority: 'Low', cost: '$12,000' },
-      ];
-      
-      setAuthorizations(mockAuthorizations);
-      setIsLoading(false);
-    }, 1000);
-  }, []);
+    let mounted = true;
+    const controller = new AbortController();
+
+    const fetchForTab = async () => {
+      setIsLoading(true);
+      try {
+        const token = localStorage.getItem('token');
+        const headers: Record<string,string> = { Accept: 'application/json' };
+        if (token) headers['Authorization'] = `Bearer ${token}`;
+
+        const unidadId = user?.id_unidad ?? user?.unidadId ?? user?.unidad ?? user?.facilityId ?? null;
+
+        // pending -> ruta especializada
+        if (selectedTab === 'pending') {
+          const url = `${API_BASE}/referrals/director/pending`;
+          const res = await fetch(url, { method: 'GET', headers, signal: controller.signal });
+          if (!mounted) return;
+          if (!res.ok) { setAuthorizations([]); return; }
+          const data = await res.json().catch(() => []);
+          const rows = Array.isArray(data) ? data : (data.rows ?? data);
+          setAuthorizations(rows.map(mapToAuth));
+          return;
+        }
+
+        // approved -> traer solo referencias aprobadas de la unidad del director
+        if (selectedTab === 'approved') {
+          const url = `${API_BASE}/referrals/unit/approved`;
+          const res = await fetch(url, { method: 'GET', headers, signal: controller.signal });
+          if (!mounted) return;
+          if (!res.ok) { setAuthorizations([]); return; }
+          const data = await res.json().catch(() => []);
+          const rows = Array.isArray(data) ? data : (data.rows ?? data);
+          console.debug('[Autorizaciones] fetched rows for approved:', rows.length, rows[0]);
+          setAuthorizations(rows.map(mapToAuth));
+          return;
+        }
+        
+        // mapping estado
+        const estadoMap: Record<string,string|null> = {
+          pending: 'Enviada',
+          approved: 'Aprobada',
+          denied: 'Rechazada',
+          info: null,
+          all: null
+        };
+        const estado = estadoMap[selectedTab] ?? null;
+
+        // Intentar traer desde backend filtrando por estado (si aplica)
+        const params = new URLSearchParams();
+        if (unidadId) params.set('id_unidad_origen', String(unidadId));
+        if (estado) params.set('estado', estado);
+
+        let url = `${API_BASE}/referrals${params.toString() ? `?${params.toString()}` : ''}`;
+        let res = await fetch(url, { method: 'GET', headers, signal: controller.signal });
+        if (!mounted) return;
+
+        let data = [];
+        if (res.ok) {
+          data = await res.json().catch(() => []);
+        } else {
+          // si falla el filtro por estado, no abortamos: intentamos recuperar sin filtro
+          console.warn('fetch with estado failed', res.status);
+        }
+
+        let rows = Array.isArray(data) ? data : (data.rows ?? data);
+
+        // FALLBACK: si no hay resultados y no pedimos "all" ni "pending", traer todo y filtrar en cliente
+        if ((rows?.length ?? 0) === 0 && selectedTab !== 'all' && selectedTab !== 'pending') {
+          const allParams = new URLSearchParams();
+          if (unidadId) allParams.set('id_unidad_origen', String(unidadId));
+          const allUrl = `${API_BASE}/referrals${allParams.toString() ? `?${allParams.toString()}` : ''}`;
+          const allRes = await fetch(allUrl, { method: 'GET', headers, signal: controller.signal });
+          if (allRes.ok) {
+            const allData = await allRes.json().catch(() => []);
+            rows = Array.isArray(allData) ? allData : (allData.rows ?? allData);
+          }
+          // filtrar localmente por texto en estado o por director_autoriza cuando corresponda
+          const needApproved = selectedTab === 'approved';
+          const needDenied = selectedTab === 'denied';
+          rows = (rows ?? []).filter((r: any) => {
+            const estadoText = String(r.estado ?? '').toLowerCase();
+            if (needApproved && (estadoText.includes('aprob') || (r.id_director_autoriza && !String(r.id_director_autoriza).trim().length === true))) return true;
+            if (needDenied && estadoText.includes('rech')) return true;
+            // si el campo estado está vacío pero hay id_director_autoriza lo consideramos aprobado
+            if (needApproved && (!estadoText || estadoText.trim() === '') && r.id_director_autoriza) return true;
+            return false;
+          });
+        }
+
+        setAuthorizations((rows ?? []).map(mapToAuth));
+      } catch (err) {
+        if ((err as any)?.name !== 'AbortError') {
+          console.error('fetchForTab error', err);
+          setAuthorizations([]);
+        }
+      } finally {
+        if (mounted) setIsLoading(false);
+      }
+    };
+
+    fetchForTab();
+
+    return () => {
+      mounted = false;
+      controller.abort();
+    };
+  }, [user, selectedTab]); // <-- refetch cuando cambie la pestaña o el usuario
   
   // Filter authorizations based on search term and tab
   const filteredAuthorizations = authorizations.filter(auth => {
@@ -77,60 +208,82 @@ export const DirectorAuthorizations: React.FC = () => {
     onOpen();
   };
   
-  const handleApprove = (id: string) => {
-    setAuthorizations(authorizations.map(auth => 
-      auth.id === id 
-        ? { ...auth, status: 'Approved' as const } 
-        : auth
-    ));
-    
-    if (selectedAuth?.id === id) {
-      setSelectedAuth({ ...selectedAuth, status: 'Approved' as const });
+  const handleApprove = async (id: string, auth?: Authorization) => {
+    const realId = auth?.rawId ?? (auth?.raw?.id_referencia ?? id);
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`${API_BASE}/referrals/${encodeURIComponent(realId)}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({}) // opcional: id_director_autoriza si lo tienes
+      });
+      if (!res.ok) {
+        const txt = await res.text().catch(()=> '');
+        console.error('approve failed', res.status, txt);
+        addToast({ title: 'Error', description: 'No se pudo aprobar la referencia', color: 'danger' });
+        return;
+      }
+      const data = await res.json().catch(() => null);
+      // actualizar UI localmente: marcar como Approved/Pending->Approved
+      setAuthorizations(prev => prev.map(a => (a.id === id ? ({ ...a, status: 'Approved' }) : a)));
+      addToast({ title: 'Aprobada', description: 'Referencia aprobada por el director', color: 'success' });
+    } catch (err) {
+      console.error('approve error', err);
+      addToast({ title: 'Error', description: 'No se pudo aprobar', color: 'danger' });
     }
-    
-    addToast({
-      title: "Authorization Approved",
-      description: `Authorization ${id} has been approved successfully`,
-      color: "success"
-    });
   };
   
-  const handleDeny = (id: string) => {
-    setAuthorizations(authorizations.map(auth => 
-      auth.id === id 
-        ? { ...auth, status: 'Denied' as const } 
-        : auth
-    ));
-    
-    if (selectedAuth?.id === id) {
-      setSelectedAuth({ ...selectedAuth, status: 'Denied' as const });
+  const handleDeny = async (id: string, auth?: Authorization) => {
+    const realId = auth?.rawId ?? (auth?.raw?.id_referencia ?? id);
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`${API_BASE}/referrals/${encodeURIComponent(realId)}/deny`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({}) // opcional: id_director_autoriza
+      });
+      if (!res.ok) {
+        const txt = await res.text().catch(()=> '');
+        console.error('deny failed', res.status, txt);
+        addToast({ title: 'Error', description: 'No se pudo rechazar la referencia', color: 'danger' });
+        return;
+      }
+      const data = await res.json().catch(() => null);
+      setAuthorizations(prev => prev.map(a => (a.id === id ? ({ ...a, status: 'Denied' }) : a)));
+      if (selectedAuth?.id === id) setSelectedAuth({ ...selectedAuth, status: 'Denied' });
+      addToast({ title: 'Rechazada', description: 'Referencia rechazada correctamente', color: 'danger' });
+    } catch (err) {
+      console.error('deny error', err);
+      addToast({ title: 'Error', description: 'No se pudo rechazar la referencia', color: 'danger' });
     }
-    
-    addToast({
-      title: "Authorization Denied",
-      description: `Authorization ${id} has been denied`,
-      color: "danger"
-    });
   };
   
-  const handleRequestInfo = (id: string) => {
-    setAuthorizations(authorizations.map(auth => 
-      auth.id === id 
-        ? { ...auth, status: 'More Info Needed' as const } 
-        : auth
-    ));
-    
-    if (selectedAuth?.id === id) {
-      setSelectedAuth({ ...selectedAuth, status: 'More Info Needed' as const });
-    }
-    
-    addToast({
-      title: "More Information Requested",
-      description: `Additional information requested for authorization ${id}`,
-      color: "warning"
-    });
+  // abrir modal con la referencia completa (Request Info ahora muestra la referencia)
+  const handleRequestInfo = (auth: Authorization) => {
+    // abrir modal de detalle con el id real (rawId) si está disponible
+    const realId = auth.rawId ?? auth.id;
+    setDetailId(realId ? String(realId) : String(auth.id));
+    setDetailOpen(true);
   };
   
+  // NEW: navegar a edición (guarda sessionStorage fallback para evitar pérdida al hacer redirect)
+  const handleEditReferral = (auth: Authorization) => {
+    const referral = (auth as any).raw ?? auth;
+    try {
+      sessionStorage.setItem('editReferral', JSON.stringify({ edit: true, referral }));
+    } catch (e) { /* noop */ }
+
+    const token = localStorage.getItem('token');
+    if (!token) {
+      // si no logueado, ir a login y el sessionStorage preserva el objeto
+      navigate('/login', { state: { from: location.pathname } });
+      return;
+    }
+
+    // navegar al formulario de nueva/editar referencia (ajusta ruta si tu app usa otra)
+    navigate('/doctor/referrals/new', { state: { edit: true, referral } });
+  };
+
   const getStatusColor = (status: Authorization['status']) => {
     switch (status) {
       case 'Approved': return 'success';
@@ -333,13 +486,25 @@ export const DirectorAuthorizations: React.FC = () => {
                                 <DropdownItem 
                                   key="approve" 
                                   description="Approve this authorization"
-                                  onPress={() => handleApprove(auth.id)}
+                                  onPress={() => handleApprove(auth.id, auth)}
                                 >
                                   <div className="flex items-center gap-2 text-success">
                                     <Icon icon="lucide:check" />
                                     <span>Approve</span>
                                   </div>
                                 </DropdownItem>
+
+                                <DropdownItem 
+                                  key="edit"
+                                  description="Editar referencia"
+                                  onPress={() => handleEditReferral(auth)}
+                                >
+                                  <div className="flex items-center gap-2 text-primary">
+                                    <Icon icon="lucide:edit-2" />
+                                    <span>Edit</span>
+                                  </div>
+                                </DropdownItem>
+
                                 <DropdownItem 
                                   key="deny" 
                                   description="Deny this authorization"
@@ -352,8 +517,8 @@ export const DirectorAuthorizations: React.FC = () => {
                                 </DropdownItem>
                                 <DropdownItem 
                                   key="info" 
-                                  description="Request additional information"
-                                  onPress={() => handleRequestInfo(auth.id)}
+                                  description="Ver referencia completa"
+                                  onPress={() => handleRequestInfo(auth)}
                                 >
                                   <div className="flex items-center gap-2 text-primary">
                                     <Icon icon="lucide:help-circle" />
@@ -450,6 +615,10 @@ export const DirectorAuthorizations: React.FC = () => {
                         <p className="font-medium">{selectedAuth.cost}</p>
                       </div>
                     )}
+                    <div>
+                      <p className="text-small text-foreground-500">Servicio solicitado</p>
+                      <p className="font-medium">{selectedAuth?.serviceRequested ?? '—'}</p>
+                    </div>
                   </div>
                   
                   <div className="border-t border-divider pt-4">
@@ -491,7 +660,7 @@ export const DirectorAuthorizations: React.FC = () => {
                       color="primary" 
                       variant="flat" 
                       onPress={() => {
-                        handleRequestInfo(selectedAuth.id);
+                        if (selectedAuth) handleRequestInfo(selectedAuth);
                         onClose();
                       }}
                     >
@@ -517,6 +686,18 @@ export const DirectorAuthorizations: React.FC = () => {
           )}
         </ModalContent>
       </Modal>
+      
+      {/* Modal reutilizado para mostrar la referencia completa */}
+      <ReferralDetailModal
+        referralId={detailId}
+        isOpen={detailOpen}
+        onClose={() => {
+          setDetailOpen(false);
+          setDetailId(null);
+          // Si el modal de Authorization no está abierto, reabrirlo
+          if (!isOpen) onOpen();
+        }}
+      />
     </div>
   );
 };

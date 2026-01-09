@@ -9,8 +9,8 @@ export const getAllPatients = async (req, res) => {
       include: [
         {
           model: User,
-          as: 'user',
-          attributes: ['name', 'email']
+          as: 'usuario', // <- usar alias correcto definido en las asociaciones
+          attributes: ['id_usuario', 'email']
         }
       ]
     });
@@ -30,8 +30,8 @@ export const getPatientById = async (req, res) => {
       include: [
         {
           model: User,
-          as: 'user',
-          attributes: ['name', 'email']
+          as: 'usuario', // <- alias corregido
+          attributes: ['id_usuario', 'email']
         }
       ]
     });

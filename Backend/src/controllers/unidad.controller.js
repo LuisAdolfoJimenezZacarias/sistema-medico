@@ -1,4 +1,5 @@
 import db from '../models/index.js';
+import { Op } from 'sequelize';
 const { Unidad, sequelize } = db;
 
 export const getUnidades = async (req, res) => {
@@ -6,7 +7,8 @@ export const getUnidades = async (req, res) => {
     const exclude = req.query.exclude ? Number(req.query.exclude) : (req.params.id ? Number(req.params.id) : null);
 
     if (Unidad && typeof Unidad.findAll === 'function') {
-      const where = { activo: 1 }; // <-- eliminar la anotación de tipo
+      // usar booleano para activo (según tu model: activo BOOLEAN)
+      const where = { activo: true };
 
       if (exclude && !Number.isNaN(exclude)) where.id_unidad = { [Op.ne]: exclude };
       const rows = await Unidad.findAll({

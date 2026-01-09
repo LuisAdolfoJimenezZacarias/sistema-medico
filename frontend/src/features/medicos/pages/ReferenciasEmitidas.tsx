@@ -1,9 +1,13 @@
-import React from 'react';
+import React from "react";
 import { Table, TableHeader, TableColumn, TableBody, TableRow, TableCell, Button, Input, Dropdown, DropdownTrigger, DropdownMenu, DropdownItem, Pagination, Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, useDisclosure, Chip, Tabs, Tab } from '@heroui/react';
 import { Icon } from '@iconify/react';
 import { motion } from 'framer-motion';
 import { addToast } from '@heroui/react';
 import { useNavigate } from 'react-router-dom';
+import { useAuth } from "../../../context/auth-context";
+import ReferralDetailModal from '../components/ReferralDetailModal';
+
+const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:5000/api';
 
 export interface Referral {
   id: string;
@@ -22,8 +26,48 @@ export interface Referral {
   notes?: string;
 }
 
+// simple mapper (ajusta según shape real del backend)
+const mapReferral = (r: any): Referral & { rawId?: number | string; _raw?: any } => ({
+  // rawId es el id numérico real de la referencia en la BD
+  rawId: r.id_referencia ?? r.id ?? null,
+  _raw: r, // <-- conservar objeto original para edición/navegación
+  id: r.folio ?? String(r.id_referencia ?? r.id ?? (r.referralId ?? '')),
+  patientId: String(r.id_paciente ?? r.paciente?.id_paciente ?? r.patientId ?? r.patient_id ?? ''),
+  patientName: r.paciente_ref
+    ? [r.paciente_ref.nombre, r.paciente_ref.apellido_paterno, r.paciente_ref.apellido_materno].filter(Boolean).join(' ')
+    : (r.nombre_paciente ?? r.patientName ?? ''),
+
+  // usar el include que devuelve el backend (especialidad_ref)
+  specialty: r.especialidad_ref?.nombre ?? r.especialidad?.nombre ?? r.servicio ?? r.specialty ?? '',
+  reason: r.motivo_envio ?? r.reason ?? r.resumen_clinico ?? '',
+  priority: (r.prioridad ? (String(r.prioridad).toLowerCase().includes('alta') ? 'High' : String(r.prioridad).toLowerCase().includes('baja') ? 'Low' : 'Medium') : 'Medium') as 'High'|'Medium'|'Low',
+  // antes: esta línea convertía cualquier valor desconocido a 'Rejected'
+  // status: (r.estado ? (String(r.estado).toLowerCase().includes('pend') ? 'Pending' : String(r.estado).toLowerCase().includes('acept') ? 'Accepted' : String(r.estado).toLowerCase().includes('comp') ? 'Completed' : 'Rejected') : 'Pending') as any,
+
+  // reemplazar por:
+  status: (() => {
+    const raw = String(r.estado ?? '').toLowerCase();
+    if (!raw) return 'Pending';
+    if (raw.includes('pend')) return 'Pending';
+    if (raw.includes('envi')) return 'Pending'; // 'Enviada' -> tratar como pendiente/enviada al director
+    // admitir variantes: "aprobada", "aceptada"
+    if (raw.includes('aprob')) return 'Aprobada';
+     if (raw.includes('acept')) return 'Accepted';
+    if (raw.includes('comp')) return 'Completed';
+    if (raw.includes('rech')) return 'Rejected';
+    // fallback seguro: no asumir rechazo, marcar como pendiente u 'Unknown'
+    return 'Pending';
+  })() as any,
+  referringDoctor: r.medico_solicitante ?? r.referringDoctor ?? '',
+  referringFacility: r.unidad_origen_nombre ?? r.referringFacility ?? '',
+  referredDoctor: String(r.id_medico_destino ?? r.referredDoctor ?? ''),
+  referredFacility: r.unidad_destino_nombre ?? r.referredFacility ?? '',
+  dateCreated: r.fecha_solicitud ? new Date(r.fecha_solicitud).toLocaleString() : (r.dateCreated ?? ''),
+  dateCompleted: r.fecha_completado ?? r.dateCompleted ?? '',
+  notes: r.resumen_clinico ?? r.notes ?? ''
+});
+
 export const ReferenciasEmitidas: React.FC = () => {
- /* const { isOpen, onOpen, onOpenChange } = useDisclosure();*/
   const navigate = useNavigate();
   const [referrals, setReferrals] = React.useState<Referral[]>([]);
   const [searchTerm, setSearchTerm] = React.useState('');
@@ -44,25 +88,71 @@ export const ReferenciasEmitidas: React.FC = () => {
     notes: ''
   });
   
-  // Mock referral data
+  // Detail modal state
+  const [detailId, setDetailId] = React.useState<string | null>(null);
+  const [detailOpen, setDetailOpen] = React.useState(false);
+  
+  // obtener usuario desde el context; Login usa useAuth() y guarda 'user' en localStorage via authService.saveAuth
+  const { user } = useAuth();
+  
+  // helper para determinar si la referencia fue emitida por el medicoId
+  const referralIsFromDoctor = (r: any, medicoId: any) => {
+    if (!medicoId) return false;
+    const candidates = [
+      r.medico_solicitante,
+      r.id_medico_remitente,
+      r.id_medico_solicitante,
+      r.id_medico,
+      r.medico_id,
+      r.medico?.id,
+      r.medicoSolicitanteId,
+      r.solicitante_id
+    ];
+    return candidates.some(v => v !== undefined && v !== null && String(v) === String(medicoId));
+  };
+
   React.useEffect(() => {
-    // Simulate API call
-    setTimeout(() => {
-      const mockReferrals: Referral[] = [
-        { id: 'REF-2023-001', patientId: 'P001', patientName: 'Maria Garcia', specialty: 'Cardiology', reason: 'Chest pain, abnormal ECG', priority: 'High', status: 'Pending', referringDoctor: 'Dr. Jane Smith', referringFacility: 'Community Health Center', referredFacility: 'Central Hospital', dateCreated: '2023-09-15' },
-        { id: 'REF-2023-002', patientId: 'P002', patientName: 'John Smith', specialty: 'Neurology', reason: 'Recurring headaches, dizziness', priority: 'Medium', status: 'Accepted', referringDoctor: 'Dr. Jane Smith', referredDoctor: 'Dr. Michael Chen', referringFacility: 'Community Health Center', referredFacility: 'Neurology Institute', dateCreated: '2023-09-14' },
-        { id: 'REF-2023-003', patientId: 'P003', patientName: 'Robert Johnson', specialty: 'Dermatology', reason: 'Unusual skin rash, itching', priority: 'Low', status: 'Completed', referringDoctor: 'Dr. Jane Smith', referredDoctor: 'Dr. Sarah Lee', referringFacility: 'Community Health Center', referredFacility: 'Skin Care Center', dateCreated: '2023-09-12', dateCompleted: '2023-09-20' },
-        { id: 'REF-2023-004', patientId: 'P004', patientName: 'Sarah Williams', specialty: 'Ophthalmology', reason: 'Blurred vision, eye pain', priority: 'Medium', status: 'Pending', referringDoctor: 'Dr. Jane Smith', referringFacility: 'Community Health Center', referredFacility: 'Vision Care Clinic', dateCreated: '2023-09-10' },
-        { id: 'REF-2023-005', patientId: 'P005', patientName: 'Michael Brown', specialty: 'Orthopedics', reason: 'Chronic back pain', priority: 'Medium', status: 'Rejected', referringDoctor: 'Dr. Jane Smith', referredDoctor: 'Dr. James Wilson', referringFacility: 'Community Health Center', referredFacility: 'Orthopedic Specialists', dateCreated: '2023-09-08', notes: 'Patient should first complete physical therapy' },
-        { id: 'REF-2023-006', patientId: 'P006', patientName: 'Jennifer Davis', specialty: 'Endocrinology', reason: 'Suspected diabetes', priority: 'Medium', status: 'Completed', referringDoctor: 'Dr. Jane Smith', referredDoctor: 'Dr. Emily Rodriguez', referringFacility: 'Community Health Center', referredFacility: 'Diabetes Care Center', dateCreated: '2023-09-05', dateCompleted: '2023-09-18' },
-        { id: 'REF-2023-007', patientId: 'P007', patientName: 'David Miller', specialty: 'Pulmonology', reason: 'Chronic cough, shortness of breath', priority: 'High', status: 'Accepted', referringDoctor: 'Dr. Jane Smith', referredDoctor: 'Dr. Robert Kim', referringFacility: 'Community Health Center', referredFacility: 'Respiratory Institute', dateCreated: '2023-09-03' },
-        { id: 'REF-2023-008', patientId: 'P008', patientName: 'Lisa Wilson', specialty: 'Gastroenterology', reason: 'Abdominal pain, nausea', priority: 'Low', status: 'Pending', referringDoctor: 'Dr. Jane Smith', referringFacility: 'Community Health Center', referredFacility: 'Digestive Health Center', dateCreated: '2023-09-01' },
-      ];
-      
-      setReferrals(mockReferrals);
-      setIsLoading(false);
-    }, 1000);
-  }, []);
+    const fetchReferrals = async () => {
+      setIsLoading(true);
+      try {
+        // Preferir token del context si existe, fallback a localStorage 'auth_token'
+        const ctxToken = (window as any).__AUTH_TOKEN__ || null; // opcional: global debug
+        const tokenFromContext = (user && (user.token || user.auth_token || user?.tokenString)) ?? null;
+        const token = tokenFromContext || localStorage.getItem('auth_token') || localStorage.getItem('authToken') || localStorage.getItem('token');
+
+        const rawBase = (import.meta.env.VITE_API_URL as string) ?? 'http://localhost:5000';
+        const API_BASE = rawBase.replace(/\/+$/, '').replace(/\/api$/i, '');
+        const url = `${API_BASE}/api/referrals/doctor/me`;
+        const headers: Record<string,string> = { Accept: 'application/json' };
+        if (token) headers['Authorization'] = `Bearer ${token}`;
+
+        console.log('[ReferenciasEmitidas] fetching doctor referrals', { url, hasToken: Boolean(token) });
+
+        const res = await fetch(url, { method: 'GET', headers });
+
+        // NO HACER FALLBACK a /api/referrals: si no está autorizado o hay error, mostrar vacío y avisar
+        if (!res.ok) {
+          const txt = await res.text().catch(()=> '');
+          console.warn('[ReferenciasEmitidas] doctor/me failed', res.status, txt.slice(0,200));
+          // mostrar vacío (no mostrar referencias de otros)
+          setReferrals([]);
+          return;
+        }
+
+        const data = await res.json().catch(() => []);
+        const rows = Array.isArray(data) ? data : (data.rows ?? data);
+        setReferrals(rows.map(mapReferral));
+      } catch (err) {
+        console.error("ReferenciasEmitidas fetch error:", err);
+        setReferrals([]);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchReferrals();
+  }, [user]);
+
   
   const handleInputChange = (field: string, value: string) => {
     setFormData({
@@ -186,25 +276,7 @@ export const ReferenciasEmitidas: React.FC = () => {
                 className="w-full sm:max-w-xs"
               />
               
-              <div className="flex gap-2">
-                <Dropdown>
-                  <DropdownTrigger>
-                    <Button variant="flat" endContent={<Icon icon="lucide:chevron-down" />}>
-                      Filter
-                    </Button>
-                  </DropdownTrigger>
-                  <DropdownMenu aria-label="Filter options">
-                    <DropdownItem key="all">All Priorities</DropdownItem>
-                    <DropdownItem key="high">High Priority</DropdownItem>
-                    <DropdownItem key="medium">Medium Priority</DropdownItem>
-                    <DropdownItem key="low">Low Priority</DropdownItem>
-                  </DropdownMenu>
-                </Dropdown>
-                
-                <Button variant="flat" startContent={<Icon icon="lucide:download" />}>
-                  Export
-                </Button>
-              </div>
+              
             </div>
             
             <Table 
@@ -269,10 +341,23 @@ export const ReferenciasEmitidas: React.FC = () => {
                     <TableCell>{referral.dateCreated}</TableCell>
                     <TableCell>
                       <div className="flex gap-2">
-                        <Button isIconOnly size="sm" variant="light">
+                        <Button isIconOnly size="sm" variant="light" onPress={() => { 
+                              const realId = (referral as any).rawId ?? referral.id; 
+                              setDetailId(String(realId)); 
+                              setDetailOpen(true); 
+                             }}>
                           <Icon icon="lucide:eye" className="text-default-500" />
                         </Button>
-                        <Button isIconOnly size="sm" variant="light">
+                        <Button
+                          isIconOnly
+                          size="sm"
+                          variant="light"
+                          onPress={() => {
+                            // navegar al formulario de nueva referencia en modo edición,
+                            // pasando la referencia original en location.state
+                            navigate('/doctor/referrals/NuevaReferencia', { state: { edit: true, referral: (referral as any)._raw ?? referral } });
+                          }}
+                        >
                           <Icon icon="lucide:edit" className="text-default-500" />
                         </Button>
                         <Button isIconOnly size="sm" variant="light">
@@ -287,6 +372,12 @@ export const ReferenciasEmitidas: React.FC = () => {
           </CardBody>
         </Card>
       </motion.div>
+      
+      <ReferralDetailModal
+        referralId={detailId}
+        isOpen={detailOpen}
+        onClose={() => { setDetailOpen(false); setDetailId(null); }}
+      />
     </div>
   );
 };

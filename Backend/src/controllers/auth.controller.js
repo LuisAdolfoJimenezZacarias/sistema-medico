@@ -1,7 +1,7 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import db from '../models/index.js';
-const { User, Role, Medico, Paciente, Unidad } = db;
+const { User, Role, Medico, Paciente, Unidad, Administrativo } = db;
 import authConfig from '../config/auth.config.js';
 
 const buildUserPayload = async (userInstance, roleName) => {
@@ -9,36 +9,65 @@ const buildUserPayload = async (userInstance, roleName) => {
   let facility = null;
   const role = (roleName || '').toLowerCase();
 
-  if (role === 'medico' || role === 'doctor' || role === 'director') {
+  // Usar id_usuario si existe (fallback a id)
+  const userPk = userInstance.id_usuario ?? userInstance.id;
+
+  // Medico / Doctor
+  if (role === 'medico' || role === 'doctor') {
     const medico = await Medico.findOne({
-      where: { id_usuario: userInstance.id },
+      where: { id_usuario: userPk },
       include: [{ model: Unidad, as: 'unidad', attributes: ['nombre'] }]
     });
     if (medico) {
-      // construir nombre desde campos separados (compatibilidad con nombre_completo antiguo)
       name = medico.nombre_completo
         ? medico.nombre_completo
         : [medico.nombre, medico.apellido_paterno, medico.apellido_materno].filter(Boolean).join(' ');
       if (medico.unidad) facility = medico.unidad.nombre;
     }
-  } else if (role === 'paciente' || role === 'patient') {
-    const paciente = await Paciente.findOne({ where: { id_usuario: userInstance.id } });
+    return { id: String(userPk), email: userInstance.email, name, role: roleName, facility };
+  }
+
+  // Administrativo / Admin
+  if (role === 'administrativo' || role === 'admin' || role === 'administrador') {
+    const administrativo = await Administrativo.findOne({
+      where: { id_usuario: userPk },
+      attributes: ['id_administrativo', 'id_usuario', 'id_unidad', 'nombre', 'apellido_paterno', 'apellido_materno', 'area_trabajo', 'numero_empleado']
+    });
+
+    if (administrativo) {
+      name = [administrativo.nombre, administrativo.apellido_paterno, administrativo.apellido_materno].filter(Boolean).join(' ');
+      if (administrativo.id_unidad) {
+        const unidad = await Unidad.findByPk(administrativo.id_unidad, { attributes: ['nombre'] });
+        if (unidad) facility = unidad.nombre;
+      }
+      facility = facility || administrativo.area_trabajo || administrativo.numero_empleado || null;
+    }
+
+    return { id: String(userPk), email: userInstance.email, name, role: roleName, facility };
+  }
+
+  // Paciente / Patient
+  if (role === 'paciente' || role === 'patient') {
+    const paciente = await Paciente.findOne({ where: { id_usuario: userPk } });
     if (paciente) {
       name = paciente.nombre
         ? [paciente.nombre, paciente.apellido_paterno, paciente.apellido_materno].filter(Boolean).join(' ')
         : (paciente.nombre_completo ?? userInstance.email);
     }
+    return { id: String(userPk), email: userInstance.email, name, role: roleName, facility };
   }
-  // si necesitas director similar:
+
+  // Director
   if (role === 'director') {
-    const director = await db.Director?.findOne({ where: { id_usuario: userInstance.id } });
+    const director = await db.Director?.findOne({ where: { id_usuario: userPk } });
     if (director) {
       name = [director.nombre, director.apellido_paterno, director.apellido_materno].filter(Boolean).join(' ');
       facility = director.id_unidad ? (await Unidad.findByPk(director.id_unidad))?.nombre : facility;
     }
+    return { id: String(userPk), email: userInstance.email, name, role: roleName, facility };
   }
 
-  return { id: String(userInstance.id), email: userInstance.email, name, role: roleName, facility };
+  return { id: String(userPk), email: userInstance.email, name, role: roleName, facility };
 };
 
 export const login = async (req, res) => {
@@ -49,37 +78,43 @@ export const login = async (req, res) => {
 
     if (!email || !password) return res.status(400).json({ message: 'email and password required' });
 
-    // Buscar usuario solo por email e incluir Role
-    const user = await User.findOne({
-      where: { email },
-      include: [{ model: Role, attributes: ['id_rol', 'nombre_rol'] }],
-      attributes: ['id', 'email', 'password_hash', 'id_rol', 'activo']
-    });
+    // No solicitar atributos adicionales: dejar que Sequelize cargue los campos del modelo
+    let user;
+    try {
+      user = await User.findOne({
+        where: { email },
+        include: [{ model: Role, attributes: ['id_rol', 'nombre_rol'] }]
+      });
+    } catch (dbErr) {
+      console.error('User.findOne failed:', dbErr?.message ?? dbErr, dbErr?.sql ? '\nSQL: '+dbErr.sql : '');
+      throw dbErr;
+    }
 
     if (!user) return res.status(401).json({ message: 'Invalid credentials' });
 
-    // Verificar contraseña
     const match = typeof user.comparePassword === 'function'
       ? await user.comparePassword(password)
       : await bcrypt.compare(password, user.password_hash);
     console.log('[login] password check for', email, ':', match);
     if (!match) return res.status(401).json({ message: 'Invalid credentials' });
 
-    // Validar selectedRole numérico contra user.id_rol si se envió
     if (selectedRole !== undefined && selectedRole !== null) {
       const sel = Number(selectedRole);
-      if (Number.isNaN(sel)) {
-        return res.status(400).json({ message: 'selectedRole must be a number' });
-      }
+      if (Number.isNaN(sel)) return res.status(400).json({ message: 'selectedRole must be a number' });
       if (Number(user.id_rol) !== sel) {
         console.log('[login] role mismatch: sent=', sel, ' db=', user.id_rol);
         return res.status(403).json({ message: 'Invalid role for this user' });
       }
     }
 
-    // Obtener rol real y devolver token + payload
     const roleName = user.Role?.nombre_rol ?? (await Role.findByPk(user.id_rol))?.nombre_rol ?? null;
-    const token = jwt.sign({ id: user.id }, authConfig.secret, { expiresIn: 86400 });
+
+    // usar id_usuario si existe, fallback a id
+    const userPk = user.id_usuario ?? user.id;
+    const secret = (authConfig && authConfig.secret) || process.env.SECRET || process.env.JWT_SECRET || 'secret-key';
+    const tokenTtl = process.env.TOKEN_EXPIRES || authConfig.expiresIn || '7d';
+    const token = jwt.sign({ id: userPk }, secret, { expiresIn: tokenTtl });
+
     const userPayload = await buildUserPayload(user, roleName);
 
     return res.status(200).json({ token, user: userPayload });

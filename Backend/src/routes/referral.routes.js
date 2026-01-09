@@ -1,33 +1,25 @@
 import express from 'express';
-import { verifyToken, isDoctor, isDoctorOrDirector } from '../middlewares/auth.middleware.js';
-import {
-  getAllReferrals,
-  getReferralById,
-  createReferral,
-  updateReferralStatus,
-  getReferralsByDoctor,
-  getReferralsByPatient
-} from '../controllers/referral.controller.js';
-
+import { createReferral, getAllReferrals, getReferralById, getReferralsByDoctor, getReferralsByPatient, updateReferralStatus, updateReferral, getApprovedReferralsForUnit, denyReferralByDirector } from '../controllers/referral.controller.js';
+import { verifyToken, isDirector } from '../middlewares/auth.middleware.js';
+import * as referralController from '../controllers/referral.controller.js';
 
 const router = express.Router();
 
-// Get all referrals
-router.get('/', [verifyToken, isDoctorOrDirector], getAllReferrals);
-
-// Get referral by ID
-router.get('/:id', [verifyToken, isDoctorOrDirector], getReferralById);
-
-// Create new referral
-router.post('/', [verifyToken, isDoctor], createReferral);
-
-// Update referral status
-router.put('/:id/status', [verifyToken, isDoctor], updateReferralStatus);
-
-// Get referrals by doctor
-router.get('/doctor/me', [verifyToken, isDoctor], getReferralsByDoctor);
-
-// Get referrals by patient
-router.get('/patient/:patientId', [verifyToken, isDoctorOrDirector], getReferralsByPatient);
-
+router.post('/', verifyToken, createReferral);
+router.get('/', verifyToken, getAllReferrals);
+router.get('/id/:id', verifyToken, getReferralById);
+router.get('/doctor/me', verifyToken, getReferralsByDoctor);
+router.get('/patient/:patientId', verifyToken, getReferralsByPatient);
+// nuevo: actualizar referencia completa (edición desde frontend)
+router.patch('/:id', verifyToken, updateReferral);
+router.patch('/:id/status', verifyToken, updateReferralStatus);
+// enviar al director
+router.post('/:id/send-to-director', verifyToken, referralController.sendReferralToDirector);
+router.post('/:id/approve', verifyToken, referralController.approveReferralByDirector);
+// nueva ruta para rechazar por director
+router.post('/:id/deny', verifyToken, denyReferralByDirector);
+// referencias pendientes para director
+router.get('/director/pending', verifyToken, isDirector, referralController.getReferralsForDirector);
+// NUEVA RUTA: referencias aprobadas de la unidad del usuario/director
+router.get('/unit/approved', verifyToken, getApprovedReferralsForUnit);
 export default router;

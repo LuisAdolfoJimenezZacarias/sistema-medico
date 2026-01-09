@@ -11,16 +11,22 @@ type AuthContextType = {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-// Leer estado inicial desde localStorage de forma síncrona
+// Leer estado inicial desde localStorage de forma síncrona (buscar en múltiples claves)
 const getInitialToken = () => {
   try {
-    return typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null;
+    if (typeof window === 'undefined') return null;
+    return (
+      localStorage.getItem('token') ||
+      localStorage.getItem('auth_token') ||
+      localStorage.getItem('authToken') ||
+      null
+    );
   } catch (e) { return null; }
 };
 const getInitialUser = () => {
   try {
     if (typeof window === 'undefined') return null;
-    const raw = localStorage.getItem('auth_user');
+    const raw = localStorage.getItem('user') || localStorage.getItem('auth_user');
     return raw ? JSON.parse(raw) : null;
   } catch (e) { return null; }
 };
@@ -38,12 +44,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const newToken = res.data.token;
       const newUser = res.data.user ?? null;
 
-      // actualizar estado SÍNCRONO antes de devolver para que guards/routers encuentren el token
       setToken(newToken);
       setUser(newUser);
 
       try {
+        // Persistir en claves compatibles con todo el frontend
+        localStorage.setItem('token', newToken);
         localStorage.setItem('auth_token', newToken);
+        localStorage.setItem('authToken', newToken);
+        localStorage.setItem('user', JSON.stringify(newUser));
         localStorage.setItem('auth_user', JSON.stringify(newUser));
       } catch (e) {
         // ignore storage errors
@@ -57,9 +66,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setToken(null);
     setUser(null);
     try {
+      // limpiar todas las claves usadas
+      localStorage.removeItem('token');
       localStorage.removeItem('auth_token');
+      localStorage.removeItem('authToken');
+      localStorage.removeItem('user');
       localStorage.removeItem('auth_user');
     } catch (e) { /* ignore */ }
+    // opcional: redirect
+    if (typeof window !== 'undefined') window.location.href = '/login';
   };
 
   return (

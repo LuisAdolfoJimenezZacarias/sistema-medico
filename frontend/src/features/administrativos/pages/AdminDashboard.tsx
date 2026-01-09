@@ -42,7 +42,7 @@ export const AdminDashboard: React.FC = () => {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">Welcome, {user?.name}</h1>
+          <h1 className="text-2xl font-bold text-foreground">Bienbenido, {user?.name}</h1>
           <p className="text-foreground-500">{user?.facility} • Administrator</p>
         </div>
         <div className="flex gap-2">

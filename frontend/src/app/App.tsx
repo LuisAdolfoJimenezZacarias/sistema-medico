@@ -1,5 +1,5 @@
 import React from 'react';
-import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import { Login } from '../features/auth/pages/Login';
 // Layouts
 import { DoctorLayout } from '../layouts/DoctorLayout';
@@ -40,10 +40,9 @@ import { AuthProvider, useAuth } from '../context/auth-context';
 /* ProtectedRoute para react-router v6 */
 const ProtectedRoute = ({ children }: { children: JSX.Element }) => {
   const { isAuthenticated, loading } = useAuth();
-  const location = useLocation();
 
   if (loading) return <div>Loading...</div>; // o spinner
-  if (!isAuthenticated) return <Navigate to="/login" state={{ from: location }} replace />;
+  if (!isAuthenticated) return <Navigate to="/login" replace />;
   return children;
 };
 
@@ -130,6 +129,11 @@ export default function App() {
             <AdminLayout><GestionDocumentos /></AdminLayout>
           </ProtectedRoute>
         } />
+        <Route path="/admin/ReferenciasRecibidas" element={
+          <ProtectedRoute>
+            <AdminLayout><ReferenciasRecibidas /></AdminLayout>
+          </ProtectedRoute>
+        } />
 
         {/* Director */}
         <Route path="/director/dashboard" element={
@@ -160,8 +164,10 @@ export default function App() {
           </ProtectedRoute>
         } />
 
-        {/* Raíz redirige según rol */}
-        <Route path="/" element={<HomeRedirect />} />
+        {/* forzar redirección a /login */}
+        <Route path="/dashboard" element={<Navigate to="/login" replace />} />
+        <Route path="/" element={<Navigate to="/login" replace />} />
+        <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     </AuthProvider>
   );
